@@ -1,0 +1,42 @@
+# Build
+build/
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+
+# Backups
+*.bak
+
+# Generated results
+results/
+results - 副本/
+tmp_export/
+
+# Generated docs
+*.docx
+*.png
+_docx_dump.json
+
+# Python cache
+__pycache__/
+*.pyc
+
+# GUI config (local)
+.gui_config.json
+
+# Third-party
+opencascade-8.0.0-vc14-64-combined/
+thirdparty/
+eigen/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+
+# CMake user
+CMakeUserPresets.json
+CMakeLists.txt.bak
