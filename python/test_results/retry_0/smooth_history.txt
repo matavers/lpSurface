@@ -1,0 +1,2 @@
+iter max_displacement avg_displacement n_boundary_vertices
+1 0.005551405316 0.003646019749 775

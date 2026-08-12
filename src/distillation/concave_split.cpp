@@ -334,6 +334,20 @@ int applySplit(IntArr& faceLabels, const FaceArr& faces,
 }
 
 // ═════════════════════════════════════════════════════════════════
+// Polygon area
+// ═════════════════════════════════════════════════════════════════
+static double polygonArea(const Vec2Arr& poly) {
+    int n = (int)poly.size();
+    double a = 0.0;
+    for (int i = 0; i < n; ++i) {
+        int j = (i + 1) % n;
+        a += poly[i].x() * poly[j].y() - poly[j].x() * poly[i].y();
+    }
+    return std::abs(a) / 2.0;
+}
+
+
+// ═════════════════════════════════════════════════════════════════
 // Main split function
 // ═════════════════════════════════════════════════════════════════
 int splitConcavePartitions(IntArr& faceLabels, const FaceArr& faces,
@@ -352,37 +366,38 @@ int splitConcavePartitions(IntArr& faceLabels, const FaceArr& faces,
         const auto& poly = polylines[pid];
         if (poly.size() < 4) { nSkipped++; continue; }
 
-        // Compute polygon diameter (max pairwise distance) for scale normalization
-        double polyDiam = 0.0;
-        int n = (int)poly.size();
-        // Use O(n) approximation: bounding box diagonal
-        double xmin = poly[0].x(), xmax = poly[0].x();
-        double ymin = poly[0].y(), ymax = poly[0].y();
-        for (int i = 1; i < n; ++i) {
-            xmin = std::min(xmin, poly[i].x()); xmax = std::max(xmax, poly[i].x());
-            ymin = std::min(ymin, poly[i].y()); ymax = std::max(ymax, poly[i].y());
-        }
-        polyDiam = std::sqrt((xmax-xmin)*(xmax-xmin) + (ymax-ymin)*(ymax-ymin));
-        if (polyDiam < 1e-8) continue;
+        // Macro-concavity: area deficit = 1 - area(poly)/area(hull)
+        double pa = polygonArea(poly);
+        auto hullIdx = convexHull2D(poly);
+        Vec2Arr hullPts; for (int hi : hullIdx) hullPts.push_back(poly[hi]);
+        double ha = polygonArea(hullPts);
+        double deficit = (ha > 1e-12) ? (1.0 - pa / ha) : 0.0;
 
-        // Detect pockets
+        if (deficit < depthRatioThreshold) continue;
+
+        // Detect pockets for split line generation
         auto pockets = detectPockets(poly);
         if (pockets.empty()) continue;
 
-        // Find the deepest pocket: maxDepth / polyDiam
+        // Find deepest pocket with bounding-box normalization
+        double xmin = poly[0].x(), xmax = poly[0].x();
+        double ymin = poly[0].y(), ymax = poly[0].y();
+        for (size_t i = 1; i < poly.size(); ++i) {
+            if (poly[i].x() < xmin) xmin = poly[i].x();
+            if (poly[i].x() > xmax) xmax = poly[i].x();
+            if (poly[i].y() < ymin) ymin = poly[i].y();
+            if (poly[i].y() > ymax) ymax = poly[i].y();
+        }
+        double bbDiag = std::sqrt((xmax-xmin)*(xmax-xmin) + (ymax-ymin)*(ymax-ymin));
         int bestPkt = -1;
-        double bestRatio = 0.0;
+        double bestDepth = 0.0;
         for (int pi = 0; pi < (int)pockets.size(); ++pi) {
-            double r = pockets[pi].maxDepth / polyDiam;
-            if (r > bestRatio) { bestRatio = r; bestPkt = pi; }
+            if (pockets[pi].maxDepth > bestDepth) { bestDepth = pockets[pi].maxDepth; bestPkt = pi; }
         }
+        if (bestPkt < 0) continue;
 
-        if (bestRatio >= depthRatioThreshold) {
-            std::cout << "    part " << pid << ": max depth/diam=" << bestRatio
-                      << " (pockets=" << pockets.size() << ") -> macro-concave\n";
-        }
-
-        if (bestPkt < 0 || bestRatio < depthRatioThreshold) continue;
+        std::cout << "    part " << pid << ": deficit=" << deficit
+                  << " (depth/bb=" << bestDepth/bbDiag << ") -> macro-concave\n";
 
         // Classify and get split line
         ConcavityInfo info = classifyPocket(poly, pockets[bestPkt], pid);

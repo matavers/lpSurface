@@ -774,7 +774,7 @@ class MainWindow(QMainWindow):
         elif tag == 'part_data':
             pass
 
-        if rlabel == self._active_retry and leaf:
+        if rlabel == self._active_retry and leaf and leaf.checkState(0) == Qt.Checked:
             self._load_single_actor(path, tag, idx, leaf)
 
     def _load_single_actor(self, path, tag, idx, leaf):
@@ -788,6 +788,17 @@ class MainWindow(QMainWindow):
             return
         self._item_actors[id(leaf)] = names
         self._apply_visibility()
+
+    def _ensure_actor_loaded(self, item):
+        if not HAS_PYVISTA:
+            return
+        if self._item_actors.get(id(item)):
+            return
+        path = item.data(1, Qt.UserRole)
+        tag = item.data(2, Qt.UserRole)
+        idx = item.data(3, Qt.UserRole) or 0
+        if isinstance(path, str) and os.path.isfile(path):
+            self._load_single_actor(path, tag, idx, item)
 
     @staticmethod
     def _count_part_loop_files(dirpath):
@@ -941,6 +952,8 @@ class MainWindow(QMainWindow):
 
         self._follow_mode = False
         self._btn_follow.setVisible(True)
+        if checked:
+            self._ensure_actor_loaded(item)
         self._apply_visibility()
 
     def _find_retry_parent(self, item):
@@ -1010,51 +1023,31 @@ class MainWindow(QMainWindow):
         self._rebuild_queue.clear()
         self._rebuild_step = 0
         rlabel = self._active_retry
-        if not rlabel:
-            if HAS_PYVISTA:
-                self._plotter.disable_render = False
-            self._apply_visibility()
-            return
-        m = re.search(r'Retry\s+(\d+)', rlabel)
-        if not m:
-            if HAS_PYVISTA:
-                self._plotter.disable_render = False
-            self._apply_visibility()
-            return
-        n = int(m.group(1))
-        d = os.path.join(self._export_dir, f"retry_{n}")
-        if not os.path.isdir(d):
+        rnode = self._retry_nodes.get(rlabel) if rlabel else None
+        if not rnode:
             if HAS_PYVISTA:
                 self._plotter.disable_render = False
             self._apply_visibility()
             return
         if HAS_PYVISTA:
             self._plotter.disable_render = True
-        for fn in sorted(os.listdir(d)):
-            p = os.path.normpath(os.path.join(d, fn))
-            tag = None; idx = n
-            if fn == 'mesh.obj' and 'original' not in fn and 'recon' not in fn:
-                tag = 'mesh'
-            elif fn == 'mesh_original.obj':
-                tag = 'mesh'
-            elif fn == 'mesh_recon.obj':
-                tag = 'mesh'
-            elif fn == 'boundaries.txt':
-                tag = 'boundary'
-            elif 'boundaries_iter_' in fn and fn.endswith('.txt'):
-                tag = 'boundary'
-                try: idx = n*1000+int(fn.replace('boundaries_iter_','').replace('.txt',''))
-                except: pass
-            elif 'ruled_surf_' in fn and fn.endswith('.obj'):
-                tag = 'ruled'
-                try: idx = int(fn.replace('ruled_surf_','').replace('.obj',''))
-                except: pass
-            elif fn == 'corners.txt':
-                tag = 'corners'
-            if tag is None:
-                continue
-            self._rebuild_queue.append((p, tag, idx))
-            self._loaded_paths.add(p)
+        # Only collect checked leaf items from the tree — do NOT scan directory
+        paths_seen = set()
+        def collect(node, inherited_vis):
+            if not inherited_vis:
+                return
+            chk = node.checkState(0) == Qt.Checked
+            path = node.data(1, Qt.UserRole)
+            tag = node.data(2, Qt.UserRole)
+            idx = node.data(3, Qt.UserRole) or 0
+            if chk and isinstance(path, str) and os.path.isfile(path):
+                if path not in paths_seen:
+                    paths_seen.add(path)
+                    self._rebuild_queue.append((path, tag, idx))
+                    self._loaded_paths.add(path)
+            for i in range(node.childCount()):
+                collect(node.child(i), inherited_vis and chk)
+        collect(rnode, rnode.checkState(0) == Qt.Checked)
         self._rebuild_running = True
         self._rebuild_gen += 1
         self._process_rebuild_queue(self._rebuild_gen)

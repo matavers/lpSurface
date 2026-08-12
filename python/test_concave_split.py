@@ -1,428 +1,595 @@
 """
-独立凹性分割测试：从 NURBS 曲面生成 → 分区 → 平滑 → 模拟直纹方向 → 检测 + 分割 → 可视化
+Concave split test with visualization — standalone, no C++ dependency.
 
-用法: python test_concave_split.py
-无外部依赖（除 nurbs_eval, PyVista, numpy）
+Usage: python test_concave_split.py
+
+Flow:
+  1. Generate wavy mesh surface + UV grid
+  2. K-means partition (16 clusters on UV centroids)
+  3. Extract partition boundaries
+  4. Simple Laplacian smooth (5 iters)
+  5. Concave detection (convex hull pockets, depth/diameter threshold)
+  6. Split tip pockets, re-assign faces
+  7. Visualize before/after
+
+Keys in viewer:
+  1  - original mesh
+  2  - partition boundaries (before split)
+  3  - macro-concave partitions highlighted
+  4  - split lines
+  5  - boundaries after split
+  6  - new partitions (after-split coloring)
+  q  - quit
 """
 
-import sys, os, random
+import sys, os, time, random
 import numpy as np
-import pyvista as pv
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from nurbs_eval import NurbsSurface
-
-TAB10 = np.array([
-    [0.122,0.467,0.706],[1.000,0.498,0.055],[0.173,0.627,0.173],[0.839,0.153,0.157],
-    [0.580,0.404,0.741],[0.549,0.337,0.294],[0.890,0.467,0.761],[0.498,0.498,0.498],
-    [0.738,0.738,0.131],[0.090,0.745,0.812],
-])
+# Try to use PyVista
+try:
+    import pyvista as pv
+    HAS_PV = True
+except ImportError:
+    HAS_PV = False
+    print("Warning: pyvista not available, visualization disabled")
+    print("  Install: pip install pyvista")
 
 # ═══════════════════════════════════════════════════════════════════
-# 1. NURBS surface + mesh generation (Python only)
+# 1. Mesh generation — wavy surface + UV grid
 # ═══════════════════════════════════════════════════════════════════
 
-def make_wavy_surface():
-    import tempfile, subprocess
-    # Write surface to temp file, reload with NurbsSurface
-    # Alternatively, build control points directly:
-    from collections import namedtuple
-    # Use the C++ pipeline to generate — but for standalone, build inline:
-    nU = nV = 9; degU = degV = 3
-    xs = np.linspace(-1.5, 1.5, 9)
-    ys = np.linspace(-1.5, 1.5, 9)
-    cp = np.zeros((nU, nV, 4))
-    for i in range(nU):
-        for j in range(nV):
-            x, y = xs[i], ys[j]
-            z = 0.15*np.sin(2.5*x)*np.cos(3.0*y) + 0.10*np.sin(5.0*x+1.2)*np.sin(4.0*y+0.8) \
-                + 0.08*np.cos(7.0*x)*np.sin(6.0*y-0.5) + 0.05*np.sin(9.0*x-1.0)*np.cos(8.0*y+1.5)
-            cp[i, j] = [x, y, z, 1.0]
-
-    # Knots: clamped degree-3 with 9 CPs → 13 knots
-    nK = nU + degU + 1
-    knots = np.zeros(nK); knots[:degU+1] = 0; knots[-(degU+1):] = 1
-    inner = nK - 2*(degU+1)
-    if inner > 0: knots[degU+1:-degU-1] = np.linspace(0,1,inner+2)[1:-1]
-
-    s = NurbsSurface.__new__(NurbsSurface)
-    s.nU, s.nV = nU, nV
-    s.degU, s.degV = degU, degV
-    s.knotsU, s.knotsV = knots.copy(), knots.copy()
-    s.cp = cp
-    return s
+def wavy_z(x, y):
+    """Wavy surface height function."""
+    return (0.15 * np.sin(2.5 * x) * np.cos(3.0 * y) +
+            0.10 * np.sin(5.0 * x + 1.2) * np.sin(4.0 * y + 0.8) +
+            0.08 * np.cos(7.0 * x) * np.sin(6.0 * y - 0.5) +
+            0.05 * np.sin(9.0 * x - 1.0) * np.cos(8.0 * y + 1.5))
 
 
-def generate_mesh(surf, res):
-    """Generate (vertices, faces, uvs) from NURBS surface."""
-    u_vals = np.linspace(0, 1, res)
-    v_vals = np.linspace(0, 1, res)
+def generate_mesh(res=30, x_range=(-1.5, 1.5), y_range=(-1.5, 1.5)):
+    """Generate triangulated mesh from wavy surface on a regular UV grid."""
+    xs = np.linspace(x_range[0], x_range[1], res)
+    ys = np.linspace(y_range[0], y_range[1], res)
+
     verts = []
     uvs = []
-    idx_map = {}
-    k = 0
-    for i, u in enumerate(u_vals):
-        for j, v in enumerate(v_vals):
-            p = surf.evaluate(float(u), float(v))
-            verts.append(p)
-            uvs.append([u, v])
-            idx_map[(i, j)] = k
-            k += 1
+    for i, x in enumerate(xs):
+        for j, y in enumerate(ys):
+            z = wavy_z(x, y)
+            verts.append([x, y, z])
+            uvs.append([(x - x_range[0]) / (x_range[1] - x_range[0]),
+                        (y - y_range[0]) / (y_range[1] - y_range[0])])
+    verts = np.array(verts, dtype=np.float64)
+    uvs = np.array(uvs, dtype=np.float64)
 
     faces = []
     for i in range(res - 1):
         for j in range(res - 1):
-            a = idx_map[(i, j)]
-            b = idx_map[(i+1, j)]
-            c = idx_map[(i+1, j+1)]
-            d = idx_map[(i, j+1)]
-            faces.append([a, b, c])
-            faces.append([a, c, d])
-    return np.array(verts), np.array(faces, dtype=int), np.array(uvs)
+            a = i * res + j
+            b = a + 1
+            c = (i + 1) * res + j
+            d = c + 1
+            faces.append([a, b, d])
+            faces.append([a, d, c])
+    faces = np.array(faces, dtype=np.int32)
+
+    return verts, faces, uvs, xs, ys
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 2. Simple grid-based partition in UV domain
-#    Divide UV [0,1]x[0,1] into a grid, each cell = one partition
+# 2. Simple K-means partition (on UV centroids)
 # ═══════════════════════════════════════════════════════════════════
 
-def grid_partition(uvs, faces, n_u=4, n_v=4):
-    """Assign each face to a grid-based partition based on centroid UV."""
-    n_faces = len(faces)
-    labels = np.full(n_faces, -1, dtype=int)
-    for fi in range(n_faces):
-        f = faces[fi]
-        cu = (uvs[f[0],0] + uvs[f[1],0] + uvs[f[2],0]) / 3
-        cv = (uvs[f[0],1] + uvs[f[1],1] + uvs[f[2],1]) / 3
-        gu = min(n_u-1, int(cu * n_u))
-        gv = min(n_v-1, int(cv * n_v))
-        labels[fi] = gu + gv * n_u
-    return labels, n_u * n_v
+def kmeans_partition(uvs, faces, n_clusters=16, n_iter=20, seed=42):
+    """K-means clustering of face UV centroids."""
+    rng = np.random.RandomState(seed)
+    nf = len(faces)
+
+    # Face centroids in UV space
+    centroids = np.array([(uvs[f[0]] + uvs[f[1]] + uvs[f[2]]) / 3.0 for f in faces])
+
+    # Init centers randomly
+    centers = centroids[rng.choice(nf, n_clusters, replace=False)]
+
+    for _ in range(n_iter):
+        # Assign
+        dists = np.sum((centroids[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+        labels = np.argmin(dists, axis=1)
+
+        # Update
+        for k in range(n_clusters):
+            mask = labels == k
+            if mask.sum() > 0:
+                centers[k] = centroids[mask].mean(axis=0)
+
+    return labels
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 3. Boundary extraction + simple smoothing
+# 3. Boundary extraction
 # ═══════════════════════════════════════════════════════════════════
 
-def extract_partition_loops(face_labels, faces, verts, uvs, n_parts):
-    loops_3d, loops_uv = [], []
+def extract_partition_boundary(face_labels, faces, n_parts):
+    """Extract the boundary polygon (closed loop) for each partition."""
+    boundaries = []
     for pid in range(n_parts):
-        # Gather faces for this partition
-        pfaces = [fi for fi in range(len(faces)) if face_labels[fi] == pid]
-        if len(pfaces) < 3:
-            loops_3d.append(np.zeros((0,3)))
-            loops_uv.append(np.zeros((0,2)))
-            continue
-
-        # Find boundary edges (appear exactly once in partition)
         edge_count = {}
-        for fi in pfaces:
+        for fi in np.where(face_labels == pid)[0]:
             f = faces[fi]
             for k in range(3):
-                a, b = f[k], f[(k+1)%3]
-                if a > b: a, b = b, a
-                edge_count[(a,b)] = edge_count.get((a,b), 0) + 1
-        bedges = [e for e, c in edge_count.items() if c == 1]
+                a, b = f[k], f[(k + 1) % 3]
+                if a > b:
+                    a, b = b, a
+                edge_count[(a, b)] = edge_count.get((a, b), 0) + 1
 
-        if len(bedges) < 3:
-            loops_3d.append(np.zeros((0,3)))
-            loops_uv.append(np.zeros((0,2)))
+        # Boundary edges appear exactly once
+        boundary_edges = [e for e, c in edge_count.items() if c == 1]
+        if len(boundary_edges) < 3:
+            boundaries.append(None)
             continue
 
-        # Build adjacency and trace loop
+        # Trace edges into a loop
         adj = {}
-        for a, b in bedges:
+        for a, b in boundary_edges:
             adj.setdefault(a, []).append(b)
             adj.setdefault(b, []).append(a)
 
-        # Trace
-        loop_idx = []
-        cur = list(adj.keys())[0]; prev = -1
-        for _ in range(10000):
-            loop_idx.append(cur)
-            nbs = adj[cur]
-            nxt = -1
-            for nb in nbs:
-                if nb != prev: nxt = nb; break
-            if nxt < 0 or nxt == loop_idx[0]: break
-            prev, cur = cur, nxt
+        loop = [boundary_edges[0][0]]
+        prev = -1
+        for _ in range(len(boundary_edges) + 2):
+            cur = loop[-1]
+            nbs = adj.get(cur, [])
+            nxt = None
+            for n in nbs:
+                if n != prev:
+                    nxt = n
+                    break
+            if nxt is None or nxt == loop[0]:
+                break
+            prev = cur
+            loop.append(nxt)
 
-        if len(loop_idx) < 3:
-            loops_3d.append(np.zeros((0,3)))
-            loops_uv.append(np.zeros((0,2)))
-            continue
+        if len(loop) >= 3 and loop[0] == loop[-1]:
+            loop = loop[:-1]
+        boundaries.append(loop if len(loop) >= 3 else None)
 
-        loops_3d.append(verts[loop_idx])
-        loops_uv.append(uvs[loop_idx])
-
-    return loops_3d, loops_uv
+    return boundaries
 
 
-def smooth_loop(uv_loop, iters=5, lam=0.3):
-    """Simple Laplacian smoothing on a closed 2D polyline."""
-    pts = uv_loop.copy()
+# ═══════════════════════════════════════════════════════════════════
+# 4. Simple Laplacian smoothing
+# ═══════════════════════════════════════════════════════════════════
+
+def laplacian_smooth_polygon(points, n_iters=5, lam=0.3):
+    """Smooth a closed 2D polygon via Laplacian."""
+    pts = points.copy().astype(np.float64)
     n = len(pts)
-    if n < 3: return pts
-    for _ in range(iters):
+    if n < 4:
+        return pts
+    for _ in range(n_iters):
         new_pts = pts.copy()
         for i in range(n):
-            prev = pts[(i-1)%n]; nxt = pts[(i+1)%n]
-            new_pts[i] = pts[i] + lam * ((prev + nxt)/2 - pts[i])
+            prev = pts[(i - 1) % n]
+            nxt = pts[(i + 1) % n]
+            avg = (prev + nxt) / 2.0
+            new_pts[i] = pts[i] + lam * (avg - pts[i])
         pts = new_pts
     return pts
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 4. Ruling direction simulation (pick t_P, t_Q)
-# ═══════════════════════════════════════════════════════════════════
-
-def assign_ruling(loop):
-    """Pick two opposite-ish points on the loop as ruling endpoints."""
-    n = len(loop)
-    if n < 4: return 0.25, 0.75
-    # Use bounding box long axis direction
-    diag = loop.max(axis=0) - loop.min(axis=0)
-    axis_dir = np.argmax(diag[:2])  # 0=u, 1=v
-    tP, tQ = 0.2, 0.5 + random.uniform(0.25, 0.35)
-    return tP, tQ
-
-
-# ═══════════════════════════════════════════════════════════════════
-# 5. Concavity detection (same as C++ version)
+# 5. 2D Convex hull (Andrew's monotone chain)
 # ═══════════════════════════════════════════════════════════════════
 
 def convex_hull_2d(pts):
-    n = len(pts);
-    if n < 3: return list(range(n))
-    def cross(o,a,b): return (a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0])
+    """Returns indices of points on the convex hull."""
+    n = len(pts)
+    if n < 3:
+        return list(range(n))
     idx = sorted(range(n), key=lambda i: (pts[i][0], pts[i][1]))
-    hull = []
+
+    lower = []
     for i in idx:
-        while len(hull)>=2 and cross(pts[hull[-2]], pts[hull[-1]], pts[i]) <= 1e-10: hull.pop()
-        hull.append(i)
-    lo = len(hull)
-    for i in reversed(idx[:-1]):
-        while len(hull)>lo and cross(pts[hull[-2]], pts[hull[-1]], pts[i]) <= 1e-10: hull.pop()
-        hull.append(i)
-    if len(hull)>1: hull.pop()
-    return hull
+        while len(lower) >= 2:
+            o, a = pts[lower[-2]], pts[lower[-1]]
+            b = pts[i]
+            if (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]) > 0:
+                break
+            lower.pop()
+        lower.append(i)
 
-def detect_concave(uv_loop):
-    n = len(uv_loop); 
-    if n < 6: return False, None
-    pts = np.array(uv_loop)
-    diag = np.linalg.norm(pts.max(axis=0)-pts.min(axis=0))
-    if diag < 1e-8: return False, None
+    upper = []
+    for i in reversed(idx):
+        while len(upper) >= 2:
+            o, a = pts[upper[-2]], pts[upper[-1]]
+            b = pts[i]
+            if (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]) > 0:
+                break
+            upper.pop()
+        upper.append(i)
 
-    hull = convex_hull_2d(pts)
-    if len(hull) < 3: return False, None
+    return lower[:-1] + upper[:-1]
 
-    best_ratio = 0; best_pk = None
-    for hi in range(len(hull)):
-        hnext = (hi+1)%len(hull)
+
+def point_to_line_dist(p, a, b):
+    ab = np.array(b) - a
+    len2 = ab @ ab
+    if len2 < 1e-12:
+        return np.linalg.norm(np.array(p) - a)
+    t = max(0.0, min(1.0, (np.array(p) - a) @ ab / len2))
+    proj = a + t * ab
+    return np.linalg.norm(np.array(p) - proj)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 6. Pocket detection and concave classification
+# ═══════════════════════════════════════════════════════════════════
+
+def detect_pockets(poly):
+    """Find all convex hull pockets in a 2D polygon."""
+    n = len(poly)
+    if n < 4:
+        return []
+
+    hull = convex_hull_2d(poly)
+    h = len(hull)
+    if h < 3:
+        return []
+
+    hull_set = set(hull)
+    pockets = []
+
+    for hi in range(h):
+        hnext = (hi + 1) % h
         pA, pB = hull[hi], hull[hnext]
-        arc = []; cur = (pA+1)%n
-        while cur != pB: arc.append(cur); cur = (cur+1)%n; 
-        if not arc: continue
 
-        ab = pts[pB] - pts[pA]; l2 = np.dot(ab,ab)
-        max_d = 0
-        for vi in arc:
-            t = np.dot(pts[vi]-pts[pA], ab)/l2 if l2>1e-12 else 0
-            t = np.clip(t,0,1)
-            proj = pts[pA] + t*ab
-            d = np.linalg.norm(pts[vi]-proj)
-            if d > max_d: max_d = d
-        r = max_d/diag
-        if r > best_ratio: best_ratio = r; best_pk = (pA,pB,arc)
+        # Walk from pA to pB along polygon
+        arc = []
+        cur = (pA + 1) % n
+        while cur != pB:
+            arc.append(cur)
+            cur = (cur + 1) % n
+            if len(arc) > n:
+                break
 
-    if best_ratio < 0.03: return False, None
+        if not arc:
+            continue
 
-    pA,pB,arc = best_pk
-    # Determine tip vs corner
-    area2 = pts[pA,0]*pts[pB,1]-pts[pA,1]*pts[pB,0]
-    prev = pts[pB]
-    for vi in arc: area2 += prev[0]*pts[vi,1]-prev[1]*pts[vi,0]; prev = pts[vi]
+        max_depth = max(point_to_line_dist(poly[vi], poly[pA], poly[pB]) for vi in arc)
+        width = np.linalg.norm(np.array(poly[pA]) - poly[pB])
 
-    if area2 > 0:  # tip
-        m = len(arc)
-        best_r = 1e9; bi = bj = -1
+        pockets.append({
+            'pA': pA, 'pB': pB, 'arc': arc,
+            'max_depth': max_depth, 'width': width
+        })
+
+    return pockets
+
+
+def classify_split(poly, pocket):
+    """Attempt to find a split line for a pocket. Returns (p0, p1) or (None, None)."""
+    arc = pocket['arc']
+    m = len(arc)
+    if m < 4:
+        return None, None
+
+    # Compute polygon diameter for normalization
+    xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
+    diam = np.sqrt((max(xs)-min(xs))**2 + (max(ys)-min(ys))**2)
+    ratio = pocket['max_depth'] / diam if diam > 1e-8 else 0
+
+    if ratio < 0.03:
+        return None, None
+
+    # Compute pocket area sign (positive = tip outward, negative = corner inward)
+    idxA = int(pocket['pA'])
+    idxB = int(pocket['pB'])
+    posA = np.array(poly[idxA])
+    posB = np.array(poly[idxB])
+    area2 = posA[0]*posB[1] - posA[1]*posB[0]
+    prev = posB
+    for vi in arc:
+        p = np.array(poly[int(vi)])
+        area2 += prev[0]*p[1] - prev[1]*p[0]
+        prev = p
+
+    if area2 > 0:
+        # Tip: find neck
+        best_ratio = 1e9
+        best_i, best_j = -1, -1
         for i in range(m):
-            for j in range(i+3,m):
-                ch = pts[arc[j]]-pts[arc[i]]; cl = np.linalg.norm(ch)
-                if cl<1e-8: continue
-                md = max(np.linalg.norm(pts[arc[k]] - (pts[arc[i]] + np.dot(pts[arc[k]]-pts[arc[i]],ch)/cl**2*ch)) for k in range(i+1,j))
-                if md>0 and cl/md < best_r: best_r=cl/md; bi,bj=i,j
-        if bi<0: return True, None
-        return True, (tuple(pts[arc[bi]]), tuple(pts[arc[bj]]))
-    else:  # corner
-        max_d = -1; deepest = -1
-        for vi in arc:
-            ab = pts[pB]-pts[pA]; l2=np.dot(ab,ab)
-            t = np.dot(pts[vi]-pts[pA],ab)/l2 if l2>1e-12 else 0
-            d = np.linalg.norm(pts[vi]-(pts[pA]+np.clip(t,0,1)*ab))
-            if d>max_d: max_d=d; deepest=vi
-        if deepest<0: return True, None
-        vd=pts[deepest]; din=vd-pts[(deepest+n-1)%n]; dout=pts[(deepest+1)%n]-vd
-        din/=np.linalg.norm(din)+1e-12; dout/=np.linalg.norm(dout)+1e-12
-        bis=din+dout; bis/=np.linalg.norm(bis)+1e-12
-        mr=np.linalg.norm(pts[pB]-pts[pA])*2
-        bt=1e9; bh=None
+            vi = int(arc[i])
+            for j in range(i + 3, m):
+                vj = int(arc[j])
+                chord = np.array(poly[vj]) - np.array(poly[vi])
+                clen = np.linalg.norm(chord)
+                if clen < 1e-8:
+                    continue
+                max_d = max(point_to_line_dist(poly[int(arc[k])], poly[vi], poly[vj])
+                           for k in range(i + 1, j))
+                if max_d > 0:
+                    r = clen / max_d
+                    if r < best_ratio:
+                        best_ratio = r
+                        best_i, best_j = vi, vj
+        if best_i >= 0:
+            return np.array(poly[best_i]), np.array(poly[best_j])
+    else:
+        # Corner: angle bisector
+        # Find deepest arc point
+        deepest_i = max((int(vi) for vi in arc),
+                        key=lambda vi: point_to_line_dist(poly[vi], posA, posB))
+        vDeep = np.array(poly[deepest_i])
+        n = len(poly)
+        vPrev = np.array(poly[(deepest_i - 1) % n])
+        vNext = np.array(poly[(deepest_i + 1) % n])
+        d1 = vDeep - vPrev; d1 /= max(np.linalg.norm(d1), 1e-12)
+        d2 = vNext - vDeep; d2 /= max(np.linalg.norm(d2), 1e-12)
+        bisector = d1 + d2
+        blen = np.linalg.norm(bisector)
+        if blen < 1e-12:
+            return None, None
+        bisector /= blen
+
+        # Ray cast
+        ray_end = vDeep + bisector * diam * 2
+        best_u = 1e9
+        best_hit = None
         for i in range(n):
-            j=(i+1)%n
-            if i==deepest or j==deepest: continue
-            s1,e1=pts[i],pts[j]; d1=e1-s1; d2=bis*mr
-            cr=d1[0]*d2[1]-d1[1]*d2[0]
-            if abs(cr)<1e-12: continue
-            t=((vd[0]-s1[0])*d2[1]-(vd[1]-s1[1])*d2[0])/cr
-            u=((vd[0]-s1[0])*d1[1]-(vd[1]-s1[1])*d1[0])/cr
-            if 0<=t<=1 and u>1e-3 and u<bt: bt=u; bh=vd+u*d2
-        if bh is None: return True, None
-        return True, (tuple(vd), tuple(bh))
+            j = (i + 1) % n
+            if i == deepest_i or j == deepest_i:
+                continue
+            if (deepest_i - i) % n <= 1 or (i - deepest_i) % n <= 1:
+                continue
+            s1, e1 = np.array(poly[i]), np.array(poly[j])
+            d_seg = e1 - s1
+            d_ray = ray_end - vDeep
+            cross = d_seg[0]*d_ray[1] - d_seg[1]*d_ray[0]
+            if abs(cross) < 1e-12:
+                continue
+            t = ((vDeep[0]-s1[0])*d_ray[1] - (vDeep[1]-s1[1])*d_ray[0]) / cross
+            u = ((vDeep[0]-s1[0])*d_seg[1] - (vDeep[1]-s1[1])*d_seg[0]) / cross
+            if 0 <= t <= 1 and u > 1e-3 and u < best_u:
+                best_u = u
+                best_hit = vDeep + u * d_ray
+        if best_hit is not None:
+            return vDeep, best_hit
+
+    return None, None
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 6. Apply split to face labels
+# 7. Face re-assignment after split
 # ═══════════════════════════════════════════════════════════════════
 
-def apply_split(labels, faces, uvs, split_uv, src_pid):
-    """Assign faces on each side of UV split line to src_pid/new_pid."""
-    p0, p1 = np.array(split_uv[0]), np.array(split_uv[1])
-    ab = p1 - p0
-    n_faces = len(faces)
-    new_pid = labels.max() + 1
+def split_faces(face_labels, faces, uvs, p0, p1, src_pid, n_parts):
+    """Assign faces on each side of line p0->p1 to different partitions."""
+    nf = len(faces)
+    sides = np.zeros(nf, dtype=int)
 
-    left_count = right_count = 0
-    side = np.zeros(n_faces, dtype=int)
-    for fi in range(n_faces):
-        if labels[fi] != src_pid: continue
-        f = faces[fi]
-        cu = (uvs[f[0],0] + uvs[f[1],0] + uvs[f[2],0]) / 3
-        cv = (uvs[f[0],1] + uvs[f[1],1] + uvs[f[2],1]) / 3
-        cross = ab[0]*(cv-p0[1]) - ab[1]*(cu-p0[0])
-        if cross > 1e-12:
-            side[fi] = 1; right_count += 1
+    def line_side(pt):
+        return np.sign((p1[0]-p0[0])*(pt[1]-p0[1]) - (p1[1]-p0[1])*(pt[0]-p0[0]))
+
+    left_cnt = right_cnt = 0
+    for fi in range(nf):
+        if face_labels[fi] != src_pid:
+            continue
+        c = (uvs[faces[fi][0]] + uvs[faces[fi][1]] + uvs[faces[fi][2]]) / 3.0
+        s = line_side(c)
+        sides[fi] = s
+        if s > 0:
+            right_cnt += 1
         else:
-            left_count += 1
+            left_cnt += 1
 
-    if left_count < 3 or right_count < 3:
-        return labels
+    if left_cnt < 3 or right_cnt < 3:
+        return 0
 
-    new_labels = labels.copy()
-    for fi in range(n_faces):
-        if labels[fi] == src_pid and side[fi] == 1:
-            new_labels[fi] = new_pid
-    return new_labels
+    new_pid = n_parts
+    face_labels[faces[fi] if sides[fi] > 0 else None] = None  # no-op
+    for fi in range(nf):
+        if face_labels[fi] != src_pid:
+            continue
+        if sides[fi] > 0:
+            face_labels[fi] = new_pid
+
+    return 1
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 7. Main pipeline + visualization
+# 8. Main test flow
 # ═══════════════════════════════════════════════════════════════════
 
-def main():
-    print("1. Generating wavy NURBS surface...")
-    surf = make_wavy_surface()
-    verts, faces, uvs = generate_mesh(surf, 60)
-    print(f"   Mesh: {len(verts)} verts, {len(faces)} faces")
+def run_test():
+    print("=== Concave Split Test ===")
 
-    print("2. Grid partition (4x4 = 16 partitions)...")
-    labels, n_parts = grid_partition(uvs, faces, 4, 4)
-    print(f"   {n_parts} partitions")
+    # ── Generate mesh ──
+    print("1. Generating wavy mesh (30×30 grid)...")
+    verts, faces, uvs, xs, ys = generate_mesh(30)
+    print(f"   {len(verts)} vertices, {len(faces)} faces")
 
-    print("3. Extracting boundary loops...")
-    loops_3d, loops_uv = extract_partition_loops(labels, faces, verts, uvs, n_parts)
-    valid = [i for i in range(n_parts) if len(loops_3d[i]) >= 6]
-    print(f"   {len(valid)} valid partitions (>= 6 vertices)")
+    # ── K-means partition ──
+    n_parts = 16
+    print(f"2. K-means partition ({n_parts} clusters)...")
+    face_labels = kmeans_partition(uvs, faces, n_clusters=n_parts)
+    # Count actual non-empty partitions
+    active = len(set(face_labels))
+    print(f"   {active} non-empty partitions")
 
-    print("4. Smoothing boundaries (5 iters)...")
-    loops_uv_smoothed = [smooth_loop(loops_uv[i]) if len(loops_uv[i]) >= 6
-                         else loops_uv[i] for i in range(n_parts)]
+    # ── Extract boundaries ──
+    print("3. Extracting partition boundaries...")
+    boundaries_before = extract_partition_boundary(face_labels, faces, n_parts)
 
-    print("5. Assigning ruling directions + detecting concavity...")
-    concave_info = []
-    for pid in valid:
-        is_c, line = detect_concave(loops_uv_smoothed[pid])
-        tp, tq = assign_ruling(loops_3d[pid])
-        concave_info.append({'pid':pid,'concave':is_c,'split_line':line,'tP':tp,'tQ':tq})
+    # ── Smooth boundaries ──
+    print("4. Smoothing boundaries (5 iterations)...")
+    boundaries_smooth = []
+    for bidx, b in enumerate(boundaries_before):
+        if b is None:
+            boundaries_smooth.append(None)
+            continue
+        poly2d = np.array([uvs[v] for v in b])
+        smoothed = laplacian_smooth_polygon(poly2d, n_iters=5)
+        boundaries_smooth.append(smoothed)
+    boundaries_before = boundaries_smooth  # use smoothed for analysis
 
-    n_c = sum(1 for c in concave_info if c['concave'])
-    n_s = sum(1 for c in concave_info if c['split_line'])
-    print(f"   Concave: {n_c}/{len(valid)}, can-split: {n_s}")
-
-    print("6. Splitting concave partitions...")
-    new_labels_before = labels.copy()
+    # ── Concave detection ──
+    print("5. Concave detection + split attempt...")
+    concave_pids = []
+    split_lines = []  # (pid, p0, p1, polyline_p0, polyline_p1)
     n_splits = 0
-    split_details = []
-    for c in concave_info:
-        if c['split_line']:
-            new = apply_split(labels, faces, uvs, c['split_line'], c['pid'])
-            if new.max() > labels.max():
-                labels = new
-                n_splits += 1
-                split_details.append(c)
-    print(f"   Applied {n_splits} splits, partitions: {labels.max()+1} (was {n_parts})")
 
-    print("7. Re-extracting boundaries after split...")
-    loops3d_new, loops_uv_new = extract_partition_loops(
-        labels, faces, verts, uvs, labels.max() + 1)
+    for pid in range(n_parts):
+        poly = boundaries_before[pid]
+        if poly is None or len(poly) < 4:
+            continue
 
-    # ── PyVista ──────────────────────────────────────────────────
+        pockets = detect_pockets(poly)
+        if not pockets:
+            continue
+
+        xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
+        diam = np.sqrt((max(xs)-min(xs))**2 + (max(ys)-min(ys))**2)
+        if diam < 1e-8:
+            continue
+
+        best_pkt = max(pockets, key=lambda pk: pk['max_depth'])
+        ratio = best_pkt['max_depth'] / diam
+
+        if ratio >= 0.03:
+            concave_pids.append(pid)
+            print(f"   part {pid}: depth/diam={ratio:.4f} (pockets={len(pockets)}) -> macro-concave")
+
+            p0, p1 = classify_split(poly, best_pkt)
+            if p0 is not None:
+                # Build 3D positions for the split line
+                # p0 and p1 are in UV space — need to evaluate wavy surface
+                x0 = xs[0] + p0[0] * (xs[-1] - xs[0]) if False else \
+                     p0[0] * (1.5 - (-1.5)) + (-1.5)
+                # Actually p0/p1 are 2D polygon points in UV space [0,1]
+                # Map UV to 3D via the wavy function
+                u0, v0 = p0[0], p0[1]
+                x0 = u0 * 3.0 - 1.5
+                y0 = v0 * 3.0 - 1.5
+                z0 = wavy_z(x0, y0)
+
+                u1, v1 = p1[0], p1[1]
+                x1 = u1 * 3.0 - 1.5
+                y1 = v1 * 3.0 - 1.5
+                z1 = wavy_z(x1, y1)
+
+                split_lines.append((pid, p0, p1,
+                                   np.array([x0, y0, z0]),
+                                   np.array([x1, y1, z1])))
+
+                # Apply split
+                n = split_faces(face_labels, faces, uvs, p0, p1, pid, n_parts)
+                if n > 0:
+                    n_splits += n
+                    n_parts += 1
+                    print(f"   -> Split! {n} faces -> new partition {n_parts-1}")
+
+    print(f"   Total: {len(concave_pids)} macro-concave, {n_splits} splits")
+
+    # ── Extract boundaries after split ──
+    print("6. Extracting boundaries after split...")
+    boundaries_after = extract_partition_boundary(face_labels, faces, n_parts)
+
+    # ── Visualization ──
+    if not HAS_PV:
+        return
+
+    print("7. Visualizing...")
     pv.set_plot_theme("document")
-    pl = pv.Plotter(shape=(1, 2))
-    pl.subplot(0,0); pl.add_text("BEFORE (smoothed)", font_size=10)
-    pl.subplot(0,1); pl.add_text("AFTER (split + re-extract)", font_size=10)
+    pl = pv.Plotter()
+    pl.add_text("Concave Split Test  |  1=Mesh 2=Boundaries 3=Concave 4=Splits 5=After  q=Quit",
+                position="upper_left", font_size=10)
 
-    # Background mesh
-    farr = np.array(faces, dtype=int)
-    mesh_obj = pv.PolyData(verts, np.hstack([np.full((len(faces),1),3), farr]))
+    # --- Mesh ---
+    tri_faces = np.hstack([np.full((len(faces), 1), 3), faces]).astype(int)
+    mesh = pv.PolyData(verts, tri_faces)
+    pl.add_mesh(mesh, color='lightblue', opacity=0.4, show_edges=True, edge_color='gray',
+                name='mesh', label='Surface Mesh')
 
-    for sp in [0, 1]:
-        pl.subplot(0, sp)
-        pl.add_mesh(mesh_obj, color='lightgray', opacity=0.08, show_edges=False)
+    # --- Boundaries before split ---
+    for pid in range(min(n_parts, len(boundaries_before))):
+        poly = boundaries_before[pid]
+        if poly is None or len(poly) < 3:
+            continue
+        poly_3d = np.array([[p[0]*3.0-1.5, p[1]*3.0-1.5, wavy_z(p[0]*3.0-1.5, p[1]*3.0-1.5)]
+                           for p in poly])
+        # Close the loop
+        if np.linalg.norm(poly_3d[0] - poly_3d[-1]) > 1e-6:
+            poly_3d = np.vstack([poly_3d, poly_3d[0:1]])
+        pl.add_lines(poly_3d, color='black', width=2, name=f'boundary_{pid}',
+                     label='Boundaries (before)')
 
-        cur_loops = loops_3d if sp == 0 else loops3d_new
-        cur_uvs = loops_uv_smoothed if sp == 0 else loops_uv_new
-        cur_concave = [c for c in concave_info] if sp == 0 else []
+    # --- Concave partitions highlighted ---
+    concave_actors = []
+    for pid in concave_pids:
+        if pid >= len(boundaries_before):
+            continue
+        poly = boundaries_before[pid]
+        if poly is None:
+            continue
+        poly_3d = np.array([[p[0]*3.0-1.5, p[1]*3.0-1.5, wavy_z(p[0]*3.0-1.5, p[1]*3.0-1.5)]
+                           for p in poly])
+        if np.linalg.norm(poly_3d[0] - poly_3d[-1]) > 1e-6:
+            poly_3d = np.vstack([poly_3d, poly_3d[0:1]])
+        a = pl.add_lines(poly_3d, color='red', width=4, name=f'concave_{pid}',
+                         label='Macro-Concave')
+        concave_actors.append(a)
 
-        for pid in range(len(cur_loops)):
-            poly = cur_loops[pid]
-            if len(poly) < 3: continue
-            closed = np.vstack([poly, poly[0:1]])
+    # --- Split lines ---
+    split_actors = []
+    for pid, p0_uv, p1_uv, p0_3d, p1_3d in split_lines:
+        line_3d = np.array([p0_3d, p1_3d])
+        a = pl.add_lines(line_3d, color='orange', width=4, name=f'split_{pid}',
+                         label='Split Lines')
+        split_actors.append(a)
 
-            # Check if this pid was concave
-            cinfo = next((c for c in concave_info if c['pid'] == pid), None)
-            is_conc = cinfo['concave'] if cinfo else False
-            has_split = cinfo['split_line'] is not None if cinfo else False
+    # --- Boundaries after split ---
+    after_actors = []
+    colors = ['cyan', 'magenta', 'lime', 'yellow']
+    for pid in range(min(n_parts, len(boundaries_after))):
+        poly = boundaries_after[pid]
+        if poly is None or len(poly) < 3:
+            continue
+        poly_3d = np.array([[p[0]*3.0-1.5, p[1]*3.0-1.5, wavy_z(p[0]*3.0-1.5, p[1]*3.0-1.5)]
+                           for p in poly])
+        if np.linalg.norm(poly_3d[0] - poly_3d[-1]) > 1e-6:
+            poly_3d = np.vstack([poly_3d, poly_3d[0:1]])
+        color = colors[pid % len(colors)]
+        a = pl.add_lines(poly_3d, color=color, width=3, name=f'after_{pid}',
+                         label='After Split')
+        after_actors.append(a)
 
-            if sp == 0:
-                color = TAB10[pid % 10]
-                lw = 1
-            else:
-                if has_split:
-                    color = 'red'; lw = 3
-                elif is_conc:
-                    color = 'orange'; lw = 2
-                else:
-                    color = TAB10[2]; lw = 1
+    # Initially hide after-split boundaries
+    for a in after_actors:
+        a.SetVisibility(False)
 
-            polyd = pv.PolyData(closed, lines=np.hstack([[len(closed)], np.arange(len(closed))]))
-            pl.add_mesh(polyd, color=color, line_width=lw)
+    # --- Toggle callbacks ---
+    all_boundary = []
+    for pid in range(min(n_parts, len(boundaries_before))):
+        all_boundary.append(f'boundary_{pid}')
 
-            # Split lines on BEFORE view
-            if sp == 0 and cinfo and cinfo['split_line']:
-                uv_arr = cur_uvs[pid]; poly3 = cur_loops[pid]
-                if len(uv_arr) >= 2:
-                    p0, p1 = cinfo['split_line']
-                    d0 = np.linalg.norm(uv_arr-np.array(p0),axis=1)
-                    d1 = np.linalg.norm(uv_arr-np.array(p1),axis=1)
-                    i0, i1 = np.argmin(d0), np.argmin(d1)
-                    if i0 < len(poly3) and i1 < len(poly3):
-                        pl.add_lines(np.array([poly3[i0],poly3[i1]]),
-                                     color='yellow', width=6, connected=False)
+    def toggle_by_name(names):
+        for a in pl.renderer.actors.values():
+            if a.GetObjectName() in names:
+                a.SetVisibility(not a.GetVisibility())
 
-    pl.link_views()
+    pl.add_key_event('1', lambda: pl.renderer.actors['mesh'].SetVisibility(
+        not pl.renderer.actors['mesh'].GetVisibility()))
+    pl.add_key_event('2', lambda: toggle_by_name(all_boundary))
+    pl.add_key_event('3', lambda: [a.SetVisibility(not a.GetVisibility()) for a in concave_actors])
+    pl.add_key_event('4', lambda: [a.SetVisibility(not a.GetVisibility()) for a in split_actors])
+    pl.add_key_event('5', lambda: [a.SetVisibility(not a.GetVisibility()) for a in after_actors])
+
+    pl.add_key_event('q', pl.close)
+
+    pl.show_grid()
+    pl.camera_position = 'iso'
     pl.show()
 
 
 if __name__ == '__main__':
-    main()
+    run_test()
