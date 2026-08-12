@@ -10,6 +10,7 @@
 #include "distillation/ruled_partitioner.hpp"
 #include "distillation/boundary_smoother.hpp"
 #include "distillation/occt_mesh_reconstruct.hpp"
+#include "distillation/concave_split.hpp"
 #include "distillation/export_results.hpp"
 
 #include <iostream>
@@ -138,22 +139,28 @@ int main(int argc,char*argv[]){
     std::cout<<"  Mesh: "<<vertices.size()<<" verts, "<<faces.size()<<" faces\n";
 
     double sigma=(sigmaTarget>0)?sigmaTarget:0;
-    int K_parts=16, prevNFail=999;
+    int K_parts=16, prevNFail=999, nParts=0;
+    bool needEM=true;
+    IntArr faceLabels;
 
     for(int retry=0;retry<maxRetries;++retry){
         std::string retryDir = exportDir + "/retry_" + std::to_string(retry);
         std::filesystem::create_directories(retryDir);
         if(retry>0)std::cout<<"\n  [Retry "<<retry<<"] K="<<K_parts<<" sigma="<<sigma<<"\n";
 
-        // ── Hard-EM with current K_parts ──
-        HardEMPartitioner partitioner(nurbs,K_parts,6,3,0.001,20,0.0,true);
-        auto partResult=partitioner.partition(vertices,uvs);
-        const IntVecSet& partitions=std::get<0>(partResult);
-        int nonEmpty=0;for(auto&p:partitions)if(!p.empty())nonEmpty++;
-        std::cout<<"  Partitions: "<<nonEmpty<<"/"<<K_parts<<"\n";
+        // ── EM partition (only when needed) ──
+        if(needEM){
+            HardEMPartitioner partitioner(nurbs,K_parts,6,3,0.001,20,0.0,true);
+            auto partResult=partitioner.partition(vertices,uvs);
+            const IntVecSet& partitions=std::get<0>(partResult);
+            int nonEmpty=0;for(auto&p:partitions)if(!p.empty())nonEmpty++;
+            std::cout<<"  Partitions: "<<nonEmpty<<"/"<<K_parts<<"\n";
 
-        IntArr faceLabels=convertVertexLabelsToFaceLabels(partitions,faces,(int)vertices.size());
-        mergeTinyRegions(faceLabels,faces);
+            faceLabels=convertVertexLabelsToFaceLabels(partitions,faces,(int)vertices.size());
+            mergeTinyRegions(faceLabels,faces);
+            nParts=0;for(int fl:faceLabels)if(fl>=0&&fl>=nParts)nParts=fl+1;
+            needEM=false;
+        }
 
         auto[uMin,uMax]=nurbs.paramDomainU();auto[vMin,vMax]=nurbs.paramDomainV();
         BoundaryNetwork net=extractBoundaryNetwork(uvs,faces,faceLabels,uMin,uMax,vMin,vMax);
@@ -168,7 +175,7 @@ int main(int argc,char*argv[]){
         K=std::max(1,std::min(K,200));
         std::cout<<"  [Laplacian] sigma="<<sigma<<" K="<<K<<"\n";
 
-        if(retry>0){net.smoothedUVs.clear();net.smoothedUVs.resize(net.localToGlobal.size());
+        if(retry>0&&!needEM){net.smoothedUVs.clear();net.smoothedUVs.resize(net.localToGlobal.size());
             for(int i=0;i<(int)net.localToGlobal.size();++i)net.smoothedUVs[i]=uvs[net.localToGlobal[i]];}
 
         {auto p0=extractPolylinesFromNetwork(net);exportBoundaryPolylinesIter(retryDir+"/boundaries_iter_000.txt",p0,nurbs,0);}
@@ -193,7 +200,7 @@ int main(int argc,char*argv[]){
         std::vector<Vec3Arr> boundaryCurves3D;
         for(auto&poly:polylines2D){Vec3Arr pts;for(auto&uv:poly)pts.push_back(nurbs.evaluate(uv.x(),uv.y()));if(!pts.empty())boundaryCurves3D.push_back(pts);}
 
-        exportPartitionData(retryDir,faceLabels,faces,updatedVerts3D,updatedUVs,(int)partitions.size());
+        exportPartitionData(retryDir,faceLabels,faces,updatedVerts3D,updatedUVs,nParts);
 
         Vec3Arr corners3D;
         for(auto&poly:polylines2D){if(poly.size()<8)continue;
@@ -217,13 +224,11 @@ int main(int argc,char*argv[]){
           <<"\nnurbs_domain_u="<<uMin<<" "<<uMax
           <<"\nnurbs_domain_v="<<vMin<<" "<<vMax
           <<"\n";}
-        // Export NURBS surface definition for Python
         {std::ofstream ns(retryDir+"/nurbs_surface.txt");
          Handle(Geom_BSplineSurface) s=nurbs.surface();
          ns.precision(12);
          ns<<nurbs.numCtrlU()<<" "<<nurbs.numCtrlV()<<" "
            <<nurbs.degreeU()<<" "<<nurbs.degreeV()<<"\n";
-         // Expand compact knots to full form (with multiplicities)
          ns<<(nurbs.numCtrlU()+nurbs.degreeU()+1)<<" ";
          auto& ku=s->UKnots(); auto& mu=s->UMultiplicities();
          for(int i=1;i<=ku.Length();++i)
@@ -240,7 +245,8 @@ int main(int argc,char*argv[]){
              ns<<p.X()<<" "<<p.Y()<<" "<<p.Z()<<" "<<w<<"\n";}
         }
 
-        std::cout<<"\n=== Done ===\n  Partition data: "<<retryDir<<"\n  Optimizer: python python\\fit_ruled_grad.py "<<retryDir<<"\n";
+        std::cout<<"\n=== Done ===\n  Partition data: "<<retryDir
+                  <<"\n  Optimizer: python python\\fit_ruled_grad.py "<<retryDir<<"\n";
 
         if(tolTarget>0){
             std::string cmd="python -u python\\fit_ruled_grad.py "+retryDir+" --max-iter 3 --lr 0.02";
@@ -249,23 +255,55 @@ int main(int argc,char*argv[]){
             if(pipe){
                 char buf[1024];
                 while(fgets(buf,sizeof(buf),pipe)){std::cout<<buf<<std::flush;}
-                _pclose(pipe);
+                int rc=_pclose(pipe);
+                if(rc!=0)std::cout<<"  [Tol] optimizer exited with code "<<rc<<"\n";
             }
             std::ifstream tfin(retryDir+"/tolerance.txt");
+            if(!tfin||tfin.peek()==std::ifstream::traits_type::eof()){
+                std::cout<<"  [Tol] optimizer did not produce tolerance.txt, treating as all-fail\n";
+                // force retry without reading tolerance
+                if(retry+1<maxRetries){
+                    int nSplit=splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.3,4);
+                    if(nSplit>0){std::cout<<"  [Split] "<<nSplit<<" partitions split, re-smoothing\n";needEM=false;continue;}
+                    K_parts+=2;needEM=true;
+                    std::cout<<"  [Tol] no split possible, K->"<<K_parts<<"\n";
+                    continue;
+                }
+                break;
+            }
             std::vector<double> partTols;
             if(tfin){std::string line;std::getline(tfin,line);
                 while(std::getline(tfin,line)){std::istringstream iss(line);int pid;double tp,tq,md,rd;
                     if(iss>>pid>>tp>>tq>>md>>rd){partTols.resize(std::max((int)partTols.size(),pid+1),0.);partTols[pid]=md;}}}
             int nFail=0;for(size_t pi=0;pi<partTols.size();++pi)if(partTols[pi]>tolTarget)++nFail;
-            if(nFail>0&&retry+1<maxRetries){
-                if(nFail>=prevNFail){K_parts+=2;std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget<<", K->"<<K_parts<<"\n";}
-                else{sigma*=0.7;std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget<<", sigma->"<<sigma<<"\n";}
-                prevNFail=nFail;continue;
-            }else if(nFail>0){
-                std::cout<<"  [Tol] "<<nFail<<" still exceed after retries, stop\n";
-            }else{
+
+            if(nFail==0){
                 std::cout<<"  [Tol] all "<<partTols.size()<<" within "<<tolTarget<<", done\n";
+                break;
             }
+            if(retry+1>=maxRetries){std::cout<<"  [Tol] "<<nFail<<" still exceed after retries, stop\n";break;}
+
+            // ── Try splitting failing partitions first ──
+            std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget
+                      <<", trying concave split...\n";
+            int nSplit = splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.3,4);
+            if(nSplit>0){
+                std::cout<<"  [Split] "<<nSplit<<" partitions split → re-smoothing with same K\n";
+                needEM=false; // keep same EM, just re-extract boundaries
+                continue;
+            }
+
+            // ── No splits possible — adjust K or sigma ──
+            if(nFail>=prevNFail){
+                K_parts += 2;
+                needEM = true;
+                std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget<<", K->"<<K_parts<<"\n";
+            }else{
+                sigma*=0.7;
+                std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget<<", sigma->"<<sigma<<"\n";
+            }
+            prevNFail=nFail;
+            continue;
         }
         break;
     }

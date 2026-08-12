@@ -61,7 +61,7 @@ PIPELINE_EVENT_RE = re.compile(
 # Pipeline stages in order:
 PIPELINE_STAGES = [
     'Init', 'Hard-EM', 'Merge', 'Laplacian', 'Harmonic',
-    'OCCT', 'Export', 'Ruled', 'Tolerance', 'Complete'
+    'OCCT', 'Export', 'Split', 'Ruled', 'Tolerance', 'Complete'
 ]
 
 CONSOLE_CSS = """
@@ -88,9 +88,11 @@ def _tag_line(line, force_tag=None):
     if 'Laplacian' in s:         return 'Laplacian', line
     if 'Harmonic' in s:          return 'Harmonic', line
     if 'OCCT Split' in s or 'OCCT Mesh' in s or 'OCCT Labels' in s: return 'OCCT', line
-    if 'Step 3' in s or 'Split]' in s: return 'OCCT', line
+    if 'Step 3' in s: return 'OCCT', line
     if 'wrote ' in s:            return 'Export', line
     if 'Concave pass' in s or 'Concave split' in s: return 'Concave', line
+    if '[Concave]' in s:         return 'Concave', line
+    if '[Split]' in s:           return 'Split', line
     if '  part ' in s and ('cands' in s or 'regions' in s): return 'Concave', line
     if s.startswith('    r') and 'depth=' in s: return 'Concave', line
     if 'Partition part_' in s and 'loop=' in s: return 'Ruled', line
@@ -548,7 +550,7 @@ class MainWindow(QMainWindow):
         c = self._console.textCursor(); c.movePosition(QTextCursor.End)
         self._console.setTextCursor(c)
         # Update status bar based on tag + tree stage label
-        if tag in ('Hard-EM','Merge','Laplacian','Harmonic','OCCT'):
+        if tag in ('Hard-EM','Merge','Laplacian','Harmonic','OCCT','Split'):
             self._set_status(f"Running: {tag}")
             self._active_stage = tag
             self._update_retry_stage_label(self._active_retry, tag)
@@ -556,6 +558,10 @@ class MainWindow(QMainWindow):
             self._set_status("Running: Concave split")
             self._active_stage = 'Concave'
             self._update_retry_stage_label(self._active_retry, 'Concave')
+        elif tag == 'Split':
+            self._set_status("Running: Split")
+            self._active_stage = 'Split'
+            self._update_retry_stage_label(self._active_retry, 'Split')
         elif tag == 'Ruled':
             self._set_status("Running: Ruled fitting")
             self._active_stage = 'Ruled'
@@ -619,7 +625,7 @@ class MainWindow(QMainWindow):
             self._active_stage = stage
             self._stage_progress = ""
             active = self._active_retry
-            if stage in ('Hard-EM', 'Merge', 'Laplacian', 'Harmonic', 'OCCT'):
+            if stage in ('Hard-EM', 'Merge', 'Laplacian', 'Harmonic', 'OCCT', 'Split'):
                 self._set_status(f"Running: {stage}")
             self._update_retry_stage_label(active, stage)
 
@@ -683,10 +689,17 @@ class MainWindow(QMainWindow):
         fn = os.path.basename(path)
         tag = None
         if fn == 'mesh.obj': tag = 'mesh'
+        elif fn == 'mesh_original.obj': tag = 'mesh_original'
+        elif fn == 'mesh_recon.obj': tag = 'mesh_recon'
         elif fn == 'boundaries.txt': tag = 'boundary'
         elif 'boundaries_iter_' in fn and fn.endswith('.txt'): tag = 'boundary'
         elif 'ruled_surf_' in fn and fn.endswith('.obj'): tag = 'ruled'
         elif fn == 'tolerance.txt': tag = 'tolerance'
+        elif fn == 'corners.txt': tag = 'corners'
+        elif 'part_' in fn and '_loop.txt' in fn:
+            tag = 'part_data'
+            self._part_count = max(self._part_count,
+                self._count_part_loop_files(os.path.dirname(path)))
         else: return
 
         m = re.search(r'retry_(\d+)', path)
@@ -703,6 +716,14 @@ class MainWindow(QMainWindow):
         if tag == 'mesh':
             leaf = self._add_leaf(rnode, "Mesh", path, tag, rn)
             self._set_node_checked(leaf, cfg.get('mesh', False))
+            idx = rn
+        elif tag == 'mesh_original':
+            leaf = self._add_leaf(rnode, "Mesh (orig)", path, 'mesh', rn)
+            self._set_node_checked(leaf, False)
+            idx = rn
+        elif tag == 'mesh_recon':
+            leaf = self._add_leaf(rnode, "Mesh (recon)", path, 'mesh', rn)
+            self._set_node_checked(leaf, False)
             idx = rn
         elif tag == 'boundary':
             if fn == 'boundaries.txt':
@@ -742,11 +763,29 @@ class MainWindow(QMainWindow):
                     f"Ruled [{done}/{self._part_count}]")
         elif tag == 'tolerance':
             pass
+        elif tag == 'corners':
+            leaf = self._add_leaf(rnode, "Corners", path, 'corners', rn)
+            self._set_node_checked(leaf, False)
+            idx = rn
+        elif tag == 'part_data':
+            pass
 
         if rlabel == self._active_retry and leaf:
             names = self._load_path(path, tag, idx)
             self._item_actors[id(leaf)] = names
             self._apply_visibility()
+
+    @staticmethod
+    def _count_part_loop_files(dirpath):
+        count = 0
+        try:
+            for fn in os.listdir(dirpath):
+                m = re.match(r'part_(\d+)_loop\.txt', fn)
+                if m:
+                    count = max(count, int(m.group(1)) + 1)
+        except OSError:
+            pass
+        return count
 
     # ── File polling ──────────────────────────────
 
@@ -966,6 +1005,10 @@ class MainWindow(QMainWindow):
                 tag = None; idx = n
                 if fn == 'mesh.obj' and 'original' not in fn and 'recon' not in fn:
                     tag = 'mesh'
+                elif fn == 'mesh_original.obj':
+                    tag = 'mesh'
+                elif fn == 'mesh_recon.obj':
+                    tag = 'mesh'
                 elif fn == 'boundaries.txt':
                     tag = 'boundary'
                 elif 'boundaries_iter_' in fn and fn.endswith('.txt'):
@@ -976,13 +1019,19 @@ class MainWindow(QMainWindow):
                     tag = 'ruled'
                     try: idx=int(fn.replace('ruled_surf_','').replace('.obj',''))
                     except: pass
+                elif fn == 'corners.txt':
+                    tag = 'corners'
                 if tag is None: continue
-                names = self._load_path(p, tag, idx)
+                try:
+                    names = self._load_path(p, tag, idx)
+                except Exception:
+                    names = []
                 rnode = self._retry_nodes.get(rlabel)
-                if rnode:
+                if rnode and names:
                     for tnode in self._find_tree_items(rnode, p):
                         self._item_actors[id(tnode)] = names
                 self._loaded_paths.add(p)
+                QApplication.processEvents()
         finally:
             if HAS_PYVISTA:
                 self._plotter.disable_render = False
@@ -1006,25 +1055,51 @@ class MainWindow(QMainWindow):
             self._plotter.clear()
             self._plotter.set_background('lightblue')
 
+    @staticmethod
+    def _check_obj(path):
+        ok = os.path.isfile(path) and os.path.getsize(path) > 64
+        if not ok:
+            return path, False
+        try:
+            with open(path, 'rb') as f:
+                f.seek(-32, os.SEEK_END)
+                tail = f.read(32)
+                if b'v ' not in tail and b'f ' not in tail:
+                    f.seek(0)
+                    head = f.read(1024)
+                    if b'v ' not in head:
+                        return path, False
+        except OSError:
+            return path, False
+        return path, True
+
     def _load_path(self, path, tag, idx=0, render_now=True):
         if not HAS_PYVISTA: return []
         names = []
         try:
             import pyvista as pv
+            if tag in ('mesh', 'ruled'):
+                path, ok = self._check_obj(path)
+                if not ok:
+                    return []
             if tag == 'mesh':
                 m = pv.read(path)
                 lp = os.path.join(os.path.dirname(path), "partition_labels.txt")
                 if os.path.exists(lp):
                     labels = np.loadtxt(lp, dtype=int)
                     nc = m.n_cells; fcols = np.full((nc,3),[0.7]*3)
-                    for i in range(nc):
+                    farr = m.faces.reshape(-1, 4)[:, 1:] if m.n_cells > 0 else np.zeros((0,3), dtype=int)
+                    for i in range(min(nc, len(farr))):
                         try:
-                            c=m.get_cell(i); pts=c.point_ids
-                            if len(pts)==3:
-                                ps={labels[p] for p in pts if 0<=p<len(labels)}; ps.discard(-1)
-                                if len(ps)==1: fcols[i]=TAB10_RGB[ps.pop()%10]
-                                elif len(ps)>1: fcols[i]=np.mean([TAB10_RGB[p%10] for p in ps],axis=0)
-                        except: pass
+                            pts = farr[i]
+                            ps = {labels[p] for p in pts if 0 <= p < len(labels)}
+                            ps.discard(-1)
+                            if len(ps) == 1:
+                                fcols[i] = TAB10_RGB[list(ps)[0] % 10]
+                            elif len(ps) > 1:
+                                fcols[i] = np.mean([TAB10_RGB[p % 10] for p in ps], axis=0)
+                        except Exception:
+                            pass
                     m.cell_data['rgb']=fcols
                     nm=f"mesh_{idx}"
                     self._plotter.add_mesh(m,scalars='rgb',rgb=True,name=nm,opacity=0.85,show_edges=True,edge_color='gray')
@@ -1046,6 +1121,15 @@ class MainWindow(QMainWindow):
                 nm = f"ruled_{idx}"
                 self._plotter.add_mesh(s,name=nm,color=TAB10_RGB[idx%10],opacity=0.4,show_edges=True,edge_color='gray')
                 names.append(nm)
+            elif tag == 'corners':
+                pts = np.loadtxt(path)
+                if pts.ndim == 1: pts = pts.reshape(-1, 3)
+                if pts.shape[1] >= 3:
+                    cloud = pv.PolyData(pts[:, :3])
+                    nm = f"corners_{idx}"
+                    self._plotter.add_points(cloud, name=nm, color='red',
+                        point_size=8, render_points_as_spheres=True)
+                    names.append(nm)
             if render_now:
                 self._plotter.render()
         except Exception as e:
