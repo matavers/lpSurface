@@ -276,34 +276,24 @@ int main(int argc,char*argv[]){
                 while(std::getline(tfin,line)){std::istringstream iss(line);int pid;double tp,tq,md,rd;
                     if(iss>>pid>>tp>>tq>>md>>rd){partTols.resize(std::max((int)partTols.size(),pid+1),0.);partTols[pid]=md;}}}
             int nFail=0;for(size_t pi=0;pi<partTols.size();++pi)if(partTols[pi]>tolTarget)++nFail;
+            std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget;
 
-            if(nFail==0){
-                std::cout<<"  [Tol] all "<<partTols.size()<<" within "<<tolTarget<<", done\n";
-                break;
-            }
-            if(retry+1>=maxRetries){std::cout<<"  [Tol] "<<nFail<<" still exceed after retries, stop\n";break;}
-
-            // ── Try splitting failing partitions first ──
-            std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget
-                      <<", trying concave split...\n";
-            int nSplit = splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.3,4);
+            // ── Always check concavity, independent of tolerance ──
+            int nSplit = splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.2,4);
             if(nSplit>0){
-                std::cout<<"  [Split] "<<nSplit<<" partitions split → re-smoothing with same K\n";
-                needEM=false; // keep same EM, just re-extract boundaries
-                continue;
+                std::cout<<", splitting concave → re-smooth same K\n";
+                needEM=false; prevNFail=nFail; continue;
             }
 
-            // ── No splits possible — adjust K or sigma ──
+            if(nFail==0){std::cout<<", all pass — done\n";break;}
+            if(retry+1>=maxRetries){std::cout<<", retries exhausted — stop\n";break;}
+
             if(nFail>=prevNFail){
-                K_parts += 2;
-                needEM = true;
-                std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget<<", K->"<<K_parts<<"\n";
+                K_parts+=2;needEM=true;std::cout<<", K->"<<K_parts<<"\n";
             }else{
-                sigma*=0.7;
-                std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget<<", sigma->"<<sigma<<"\n";
+                sigma*=0.7;std::cout<<", sigma->"<<sigma<<"\n";
             }
-            prevNFail=nFail;
-            continue;
+            prevNFail=nFail; continue;
         }
         break;
     }

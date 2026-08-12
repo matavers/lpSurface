@@ -1,0 +1,195 @@
+[09:12:23] <Pipeline    >=== Starting distillation pipeline ===
+[09:12:23] <Pipeline    >Running: "D:\Projects\lpSurface\OCCT\build\Release\distillation.exe" --surface=random --export-dir="D:\Projects\lpSurface\OCCT\results" --smooth-iters=4 --tol-target=1.0000 --max-retries=5
+[09:12:23]               === NURBS Surface Partitioning + Boundary Smoothing ===
+[09:12:23] <Init        >  Random surface seed=1786497143 waves=4
+[09:12:23] <Init        >  Surface: 9x9 ctrl, deg 3x3
+[09:12:23]                 Mesh: 3721 verts, 7200 faces
+[09:12:23] <Hard-EM     >Hard-EM v2: K=16, nCtrl=6, degree=3, tol=0.001, damping=0, vertices=3721
+[09:12:23] <Hard-EM     >  iter 1: change=1 empty=0 RMS=0.555435 sizes=[410 51 54 79 495 219 170 254 437 82 140 115 367 333 381 134 ]
+[09:12:23] <Hard-EM     >  iter 2: change=0.298576 empty=0 RMS=0.0608578 sizes=[557 35 65 115 437 210 223 94 230 139 231 156 436 330 297 166 ]
+[09:12:23] <Hard-EM     >  iter 3: change=0.24402 empty=0 RMS=0.0469704 sizes=[536 40 72 124 381 208 233 63 132 159 345 172 491 256 254 255 ]
+[09:12:23] <Hard-EM     >  iter 4: change=0.151303 empty=0 RMS=0.0429435 sizes=[517 41 77 110 387 218 250 74 156 167 337 173 493 216 222 283 ]
+[09:12:23] <Hard-EM     >  iter 5: change=0.128191 empty=0 RMS=0.0376843 sizes=[516 62 83 119 413 221 246 96 171 178 313 159 489 185 200 270 ]
+[09:12:23] <Hard-EM     >  iter 6: change=0.115023 empty=0 RMS=0.0350413 sizes=[517 67 83 119 420 199 247 136 182 184 309 162 459 192 194 251 ]
+[09:12:23] <Hard-EM     >  iter 7: change=0.112335 empty=0 RMS=0.0329321 sizes=[513 42 87 118 467 174 241 145 200 194 270 188 464 179 180 259 ]
+[09:12:23] <Hard-EM     >  iter 8: change=0.0951357 empty=0 RMS=0.0351063 sizes=[510 45 89 168 425 166 246 135 202 190 269 185 475 184 173 259 ]
+[09:12:23] <Hard-EM     >  iter 9: change=0.0760548 empty=0 RMS=0.0334974 sizes=[498 49 90 155 445 163 251 140 206 191 266 190 474 177 173 253 ]
+[09:12:24] <Hard-EM     >  iter 10: change=0.0704112 empty=0 RMS=0.0336071 sizes=[502 52 92 154 455 171 245 133 186 189 260 206 483 169 176 248 ]
+[09:12:24] <Hard-EM     >  iter 11: change=0.0499866 empty=0 RMS=0.0327088 sizes=[510 60 97 156 457 170 246 142 184 188 255 208 464 158 172 254 ]
+[09:12:24] <Hard-EM     >  iter 12: change=0.0521365 empty=0 RMS=0.0312141 sizes=[505 58 99 149 482 198 240 145 183 183 251 207 450 132 167 272 ]
+[09:12:24] <Hard-EM     >  iter 13: change=0.0518678 empty=0 RMS=0.0252712 sizes=[518 52 100 159 461 195 239 156 177 172 255 219 439 135 170 274 ]
+[09:12:24] <Hard-EM     >  iter 14: change=0.0467616 empty=0 RMS=0.022833 sizes=[541 60 98 170 440 201 239 148 159 162 244 221 444 136 176 282 ]
+[09:12:24] <Hard-EM     >  iter 15: change=0.0505241 empty=0 RMS=0.0223314 sizes=[524 66 97 173 425 204 235 156 152 154 246 229 440 146 174 300 ]
+[09:12:24] <Hard-EM     >  iter 16: change=0.0427304 empty=0 RMS=0.0226456 sizes=[512 67 96 177 402 207 241 162 149 163 250 227 439 156 172 301 ]
+[09:12:24] <Hard-EM     >  iter 17: change=0.0510615 empty=0 RMS=0.0223097 sizes=[492 70 92 195 389 204 261 161 145 155 230 237 442 168 172 308 ]
+[09:12:24] <Hard-EM     >  iter 18: change=0.0454179 empty=0 RMS=0.0230368 sizes=[474 69 89 194 398 206 274 155 153 164 212 255 440 159 173 306 ]
+[09:12:24] <Hard-EM     >  iter 19: change=0.0489116 empty=0 RMS=0.0251713 sizes=[466 69 89 179 411 196 276 170 156 167 224 251 433 153 170 311 ]
+[09:12:24] <Hard-EM     >  iter 20: change=0.0572427 empty=0 RMS=0.0249994 sizes=[462 73 87 191 414 201 277 199 131 168 208 249 425 153 174 309 ]
+[09:12:24]               
+[09:12:24] <Hard-EM     >  Final ruled surfaces:
+[09:12:24]                   #0: 462 verts |C0|=7.8159 |C1|=22.5824 |C1-C0|=8.93411
+[09:12:24]                   #1: 73 verts |C0|=2.9115 |C1|=2.55656 |C1-C0|=59.0624
+[09:12:24]                   #2: 87 verts |C0|=2.81508 |C1|=3.84722 |C1-C0|=103.238
+[09:12:24]                   #3: 191 verts |C0|=30.5616 |C1|=4.36948 |C1-C0|=11.5355
+[09:12:24]                   #4: 414 verts |C0|=15.2884 |C1|=4.95224 |C1-C0|=7.54723
+[09:12:24]                   #5: 201 verts |C0|=2.83672 |C1|=2.2596 |C1-C0|=21.9913
+[09:12:24]                   #6: 277 verts |C0|=2.76922 |C1|=7.47135 |C1-C0|=5.3129
+[09:12:24]                   #7: 199 verts |C0|=742.436 |C1|=1238.24 |C1-C0|=334.998
+[09:12:24]                   #8: 131 verts |C0|=3.94361 |C1|=2.79131 |C1-C0|=9.32894
+[09:12:24]                   #9: 168 verts |C0|=3.32528 |C1|=200.164 |C1-C0|=39.3362
+[09:12:24]                   #10: 208 verts |C0|=2.74593 |C1|=3629.95 |C1-C0|=608.815
+[09:12:24]                   #11: 249 verts |C0|=20.7657 |C1|=4.01316 |C1-C0|=11.5859
+[09:12:24]                   #12: 425 verts |C0|=729.593 |C1|=4.09116 |C1-C0|=125.312
+[09:12:24]                   #13: 153 verts |C0|=5.42806 |C1|=2.64742 |C1-C0|=34.4206
+[09:12:24]                   #14: 174 verts |C0|=2.76863 |C1|=2.87126 |C1-C0|=10.6489
+[09:12:24]                   #15: 309 verts |C0|=4.1359 |C1|=5.35926 |C1-C0|=4.20769
+[09:12:24] <Hard-EM     >  Partitions: 16/16
+[09:12:24] <Merge       >  [MergeTiny] 151 regions in 4 pass(es), threshold=144
+[09:12:24] <Export      >  Boundary: 901 verts, 911 edges
+[09:12:24] <Laplacian   >  [Laplacian] sigma=0.0372891 K=4
+[09:12:24]                   iter 1/4 maxDisp=0.00559336
+[09:12:24]                   iter 2/4 maxDisp=0.00559336
+[09:12:24]                   iter 3/4 maxDisp=0.00559336
+[09:12:24]                   iter 4/4 maxDisp=0.00559336
+[09:12:24] <Harmonic    >  [Harmonic] 901 boundary verts fixed, 2820 interior solved via Jacobi
+[09:12:24] <OCCT        >  [Step 3] OCCT Splitter...
+[09:12:24] <OCCT        >  [OCCT Split] edges provided: 15
+[09:12:24] <OCCT        >  [OCCT Split] done
+[09:12:24] <OCCT        >  [OCCT Mesh] deflection=0.0002 angle=20
+[09:12:24] <OCCT        >  [OCCT Mesh] 4 faces, 904 verts, 1563 triangles
+[09:12:24] <OCCT        >  [OCCT Labels] 1563/1563 labeled
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/mesh.obj (3721 verts, 7200 faces)
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/partition_labels.txt (3721 verts)
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/face_labels.txt (7200 faces)
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/mesh_original.obj (3721 verts, 7200 faces)
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/mesh_recon.obj (904 verts, 1563 faces)
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/face_labels_recon.txt (1563 faces)
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/boundaries.txt (20 curves)
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/boundaries_uv.txt (20 curves)
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/corners.txt (37 corners)
+[09:12:24] <Export      >  wrote D:\Projects\lpSurface\OCCT\results/retry_0/smooth_history.txt (4 iterations)
+[09:12:24]               
+[09:12:24] <Pipeline    >=== Done ===
+[09:12:24]                 Partition data: D:\Projects\lpSurface\OCCT\results/retry_0
+[09:12:24]                 Optimizer: python python\fit_ruled_grad.py D:\Projects\lpSurface\OCCT\results/retry_0
+[09:12:24] <Tolerance   >  [Tol] running: python -u python\fit_ruled_grad.py D:\Projects\lpSurface\OCCT\results/retry_0 --max-iter 3 --lr 0.02
+[09:12:26]               [PIPELINE:done:count:11]
+[09:12:26]               [PIPELINE:stage:Ruled]
+[09:12:26]               
+[09:12:26]               [PIPELINE:stage:part_0]
+[09:12:26]               [Partition 0] loop=(231, 3) pts=(246, 3)
+[09:12:27]                   bounds available (30 pts)
+[09:12:37]                   iter    0  loss=52.85355819  t_P=0.3166 t_Q=0.8015
+[09:12:53]                   iter    2  loss=2.78357289  t_P=0.3147 t_Q=0.8392
+[09:12:53] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_0.obj
+[09:12:53]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_0.obj]
+[09:12:53]               [PIPELINE:done:part:0:maxDist=0.170211:rmsDist=0.058715]
+[09:12:53]               
+[09:12:53]               [PIPELINE:stage:part_4]
+[09:12:53]               [Partition 4] loop=(258, 3) pts=(202, 3)
+[09:12:54]                   bounds available (30 pts)
+[09:13:01]                   iter    0  loss=48.17676345  t_P=0.4372 t_Q=0.7805
+[09:13:14]                   iter    2  loss=3.96018136  t_P=0.3813 t_Q=0.8302
+[09:13:14] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_4.obj
+[09:13:14]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_4.obj]
+[09:13:14]               [PIPELINE:done:part:4:maxDist=0.222568:rmsDist=0.082537]
+[09:13:14]               
+[09:13:14]               [PIPELINE:stage:part_5]
+[09:13:14]               [Partition 5] loop=(168, 3) pts=(209, 3)
+[09:13:15]                   bounds available (30 pts)
+[09:13:22]                   iter    0  loss=72.75664735  t_P=0.3894 t_Q=0.7808
+[09:13:37]                   iter    2  loss=3.45537573  t_P=0.3473 t_Q=0.8124
+[09:13:37] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_5.obj
+[09:13:37]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_5.obj]
+[09:13:37]               [PIPELINE:done:part:5:maxDist=0.259071:rmsDist=0.108333]
+[09:13:37]               
+[09:13:37]               [PIPELINE:stage:part_6]
+[09:13:37]               [Partition 6] loop=(134, 3) pts=(207, 3)
+[09:13:37]                   bounds available (30 pts)
+[09:13:46]                   iter    0  loss=96.74870238  t_P=0.3466 t_Q=0.7734
+[09:14:00]                   iter    2  loss=2.31063874  t_P=0.3951 t_Q=0.9869
+[09:14:00] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_6.obj
+[09:14:00]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_6.obj]
+[09:14:00]               [PIPELINE:done:part:6:maxDist=0.190919:rmsDist=0.067231]
+[09:14:00]               
+[09:14:00]               [PIPELINE:stage:part_9]
+[09:14:00]               [Partition 9] loop=(109, 3) pts=(227, 3)
+[09:14:01]                   bounds available (30 pts)
+[09:14:10]                   iter    0  loss=151.09870250  t_P=0.3803 t_Q=0.7965
+[09:14:25]                   iter    2  loss=2.58875159  t_P=0.2999 t_Q=0.8426
+[09:14:25] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_9.obj
+[09:14:25]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_9.obj]
+[09:14:25]               [PIPELINE:done:part:9:maxDist=0.121784:rmsDist=0.042309]
+[09:14:25]               
+[09:14:25]               [PIPELINE:stage:part_10]
+[09:14:25]               [Partition 10] loop=(56, 3) pts=(194, 3)
+[09:14:25]                   bounds available (30 pts)
+[09:14:31]                   iter    0  loss=29.36340903  t_P=0.3508 t_Q=0.7816
+[09:14:43]                   iter    2  loss=3.28107816  t_P=0.3808 t_Q=0.8739
+[09:14:43] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_10.obj
+[09:14:43]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_10.obj]
+[09:14:43]               [PIPELINE:done:part:10:maxDist=0.071396:rmsDist=0.038120]
+[09:14:43]               
+[09:14:43]               [PIPELINE:stage:part_11]
+[09:14:43]               [Partition 11] loop=(185, 3) pts=(225, 3)
+[09:14:44]                   bounds available (30 pts)
+[09:14:52]                   iter    0  loss=192.30153261  t_P=0.3781 t_Q=0.7884
+[09:15:06]                   iter    2  loss=3.29970109  t_P=0.3150 t_Q=0.8227
+[09:15:06] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_11.obj
+[09:15:06]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_11.obj]
+[09:15:06]               [PIPELINE:done:part:11:maxDist=0.155324:rmsDist=0.064902]
+[09:15:06]               
+[09:15:06]               [PIPELINE:stage:part_12]
+[09:15:06]               [Partition 12] loop=(184, 3) pts=(225, 3)
+[09:15:07]                   bounds available (30 pts)
+[09:15:16]                   iter    0  loss=49.36046689  t_P=0.3573 t_Q=0.8250
+[09:15:30]                   iter    2  loss=2.68844413  t_P=0.4388 t_Q=0.9850
+[09:15:30] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_12.obj
+[09:15:30]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_12.obj]
+[09:15:30]               [PIPELINE:done:part:12:maxDist=0.077563:rmsDist=0.031596]
+[09:15:30]               
+[09:15:30]               [PIPELINE:stage:part_13]
+[09:15:31]               [Partition 13] loop=(71, 3) pts=(177, 3)
+[09:15:31]                   bounds available (30 pts)
+[09:15:37]                   iter    0  loss=54.02747558  t_P=0.3283 t_Q=0.8311
+[09:15:48]                   iter    2  loss=2.45406624  t_P=0.2936 t_Q=0.8519
+[09:15:48] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_13.obj
+[09:15:48]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_13.obj]
+[09:15:48]               [PIPELINE:done:part:13:maxDist=0.097392:rmsDist=0.040420]
+[09:15:48]               
+[09:15:48]               [PIPELINE:stage:part_14]
+[09:15:48]               [Partition 14] loop=(60, 3) pts=(198, 3)
+[09:15:48]                   bounds available (30 pts)
+[09:15:55]                   iter    0  loss=73.11194740  t_P=0.4085 t_Q=0.7735
+[09:16:07]                   iter    2  loss=2.87281457  t_P=0.2883 t_Q=0.8605
+[09:16:08] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_14.obj
+[09:16:08]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_14.obj]
+[09:16:08]               [PIPELINE:done:part:14:maxDist=0.122616:rmsDist=0.070802]
+[09:16:08]               
+[09:16:08]               [PIPELINE:stage:part_15]
+[09:16:08]               [Partition 15] loop=(126, 3) pts=(262, 3)
+[09:16:08]                   bounds available (30 pts)
+[09:16:17]                   iter    0  loss=171.35280301  t_P=0.3558 t_Q=0.8058
+[09:16:33]                   iter    2  loss=1.98173747  t_P=0.2518 t_Q=0.8753
+[09:16:33] <Export      >    wrote D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_15.obj
+[09:16:33]               [PIPELINE:file:ruled:D:\Projects\lpSurface\OCCT\results\retry_0\ruled_surf_15.obj]
+[09:16:33]               [PIPELINE:done:part:15:maxDist=0.104073:rmsDist=0.041588]
+[09:16:33]               
+[09:16:33]               [PIPELINE:done:all:11]
+[09:16:33] <Ruled       >=== 11 partitions optimized ===
+[09:16:33]                 part 0: t_P=0.3147 t_Q=0.8392 maxDist=0.170211 rmsDist=0.058715
+[09:16:33]                 part 4: t_P=0.3813 t_Q=0.8302 maxDist=0.222568 rmsDist=0.082537
+[09:16:33]                 part 5: t_P=0.3473 t_Q=0.8124 maxDist=0.259071 rmsDist=0.108333
+[09:16:33]                 part 6: t_P=0.3951 t_Q=0.9869 maxDist=0.190919 rmsDist=0.067231
+[09:16:33]                 part 9: t_P=0.2999 t_Q=0.8426 maxDist=0.121784 rmsDist=0.042309
+[09:16:33]                 part 10: t_P=0.3808 t_Q=0.8739 maxDist=0.071396 rmsDist=0.038120
+[09:16:33]                 part 11: t_P=0.3150 t_Q=0.8227 maxDist=0.155324 rmsDist=0.064902
+[09:16:33]                 part 12: t_P=0.4388 t_Q=0.9850 maxDist=0.077563 rmsDist=0.031596
+[09:16:33]                 part 13: t_P=0.2936 t_Q=0.8519 maxDist=0.097392 rmsDist=0.040420
+[09:16:33]                 part 14: t_P=0.2883 t_Q=0.8605 maxDist=0.122616 rmsDist=0.070802
+[09:16:33]                 part 15: t_P=0.2518 t_Q=0.8753 maxDist=0.104073 rmsDist=0.041588
+[09:16:33] <Export      >  wrote D:\Projects\lpSurface\OCCT\results\retry_0\tolerance.txt
+[09:16:33]               [PIPELINE:file:tolerance:D:\Projects\lpSurface\OCCT\results\retry_0\tolerance.txt]
+[09:16:33] <Tolerance   >  [Tol] all 16 within 1, done
+[09:16:33] <Pipeline    >=== C++ pipeline complete ===
+[09:16:33] <GUI         >Tolerance mode: post-processing skipped (C++ handles it)
