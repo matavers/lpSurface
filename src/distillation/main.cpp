@@ -263,7 +263,7 @@ int main(int argc,char*argv[]){
                 std::cout<<"  [Tol] optimizer did not produce tolerance.txt, treating as all-fail\n";
                 // force retry without reading tolerance
                 if(retry+1<maxRetries){
-                    int nSplit=splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.3,4);
+                    int nSplit=splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.03,3);
                     if(nSplit>0){std::cout<<"  [Split] "<<nSplit<<" partitions split, re-smoothing\n";needEM=false;continue;}
                     K_parts+=2;needEM=true;
                     std::cout<<"  [Tol] no split possible, K->"<<K_parts<<"\n";
@@ -279,7 +279,7 @@ int main(int argc,char*argv[]){
             std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget;
 
             // ── Always check concavity, independent of tolerance ──
-            int nSplit = splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.2,4);
+            int nSplit = splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.03,3);
             if(nSplit>0){
                 std::cout<<", splitting concave -> re-smooth same K\n";
                 needEM=false; prevNFail=nFail; continue;

@@ -180,6 +180,10 @@ class MainWindow(QMainWindow):
         self._part_count = 0
         self._part_done = 0
         self._current_part_label = None
+        self._rebuild_queue = []
+        self._rebuild_step = 0
+        self._rebuild_gen = 0
+        self._rebuild_running = False
 
         self._setup_menu(); self._setup_ui(); self._setup_status()
 
@@ -771,9 +775,19 @@ class MainWindow(QMainWindow):
             pass
 
         if rlabel == self._active_retry and leaf:
+            self._load_single_actor(path, tag, idx, leaf)
+
+    def _load_single_actor(self, path, tag, idx, leaf):
+        if not HAS_PYVISTA:
+            return
+        try:
             names = self._load_path(path, tag, idx)
-            self._item_actors[id(leaf)] = names
-            self._apply_visibility()
+        except Exception:
+            return
+        if not names:
+            return
+        self._item_actors[id(leaf)] = names
+        self._apply_visibility()
 
     @staticmethod
     def _count_part_loop_files(dirpath):
@@ -882,6 +896,8 @@ class MainWindow(QMainWindow):
         pname = parent.text(0) if parent else ""
 
         if txt.startswith("Retry "):
+            self._follow_mode = False
+            self._btn_follow.setVisible(True)
             if checked:
                 self._handle_switch_retry(rlabel)
             else:
@@ -989,53 +1005,80 @@ class MainWindow(QMainWindow):
     # ── Retry switch rebuild ───────────────────────
 
     def _rebuild_3d(self):
+        self._rebuild_running = False
         self._clear_3d()
-        if HAS_PYVISTA:
-            self._plotter.disable_render = True
-        try:
-            rlabel = self._active_retry
-            if not rlabel: return
-            m = re.search(r'Retry\s+(\d+)', rlabel)
-            if not m: return
-            n = int(m.group(1))
-            d = os.path.join(self._export_dir, f"retry_{n}")
-            if not os.path.isdir(d): return
-            for fn in sorted(os.listdir(d)):
-                p = os.path.normpath(os.path.join(d, fn))
-                tag = None; idx = n
-                if fn == 'mesh.obj' and 'original' not in fn and 'recon' not in fn:
-                    tag = 'mesh'
-                elif fn == 'mesh_original.obj':
-                    tag = 'mesh'
-                elif fn == 'mesh_recon.obj':
-                    tag = 'mesh'
-                elif fn == 'boundaries.txt':
-                    tag = 'boundary'
-                elif 'boundaries_iter_' in fn and fn.endswith('.txt'):
-                    tag = 'boundary'
-                    try: idx=n*1000+int(fn.replace('boundaries_iter_','').replace('.txt',''))
-                    except: pass
-                elif 'ruled_surf_' in fn and fn.endswith('.obj'):
-                    tag = 'ruled'
-                    try: idx=int(fn.replace('ruled_surf_','').replace('.obj',''))
-                    except: pass
-                elif fn == 'corners.txt':
-                    tag = 'corners'
-                if tag is None: continue
-                try:
-                    names = self._load_path(p, tag, idx)
-                except Exception:
-                    names = []
-                rnode = self._retry_nodes.get(rlabel)
-                if rnode and names:
-                    for tnode in self._find_tree_items(rnode, p):
-                        self._item_actors[id(tnode)] = names
-                self._loaded_paths.add(p)
-                QApplication.processEvents()
-        finally:
+        self._rebuild_queue.clear()
+        self._rebuild_step = 0
+        rlabel = self._active_retry
+        if not rlabel:
             if HAS_PYVISTA:
                 self._plotter.disable_render = False
-        self._apply_visibility()
+            self._apply_visibility()
+            return
+        m = re.search(r'Retry\s+(\d+)', rlabel)
+        if not m:
+            if HAS_PYVISTA:
+                self._plotter.disable_render = False
+            self._apply_visibility()
+            return
+        n = int(m.group(1))
+        d = os.path.join(self._export_dir, f"retry_{n}")
+        if not os.path.isdir(d):
+            if HAS_PYVISTA:
+                self._plotter.disable_render = False
+            self._apply_visibility()
+            return
+        if HAS_PYVISTA:
+            self._plotter.disable_render = True
+        for fn in sorted(os.listdir(d)):
+            p = os.path.normpath(os.path.join(d, fn))
+            tag = None; idx = n
+            if fn == 'mesh.obj' and 'original' not in fn and 'recon' not in fn:
+                tag = 'mesh'
+            elif fn == 'mesh_original.obj':
+                tag = 'mesh'
+            elif fn == 'mesh_recon.obj':
+                tag = 'mesh'
+            elif fn == 'boundaries.txt':
+                tag = 'boundary'
+            elif 'boundaries_iter_' in fn and fn.endswith('.txt'):
+                tag = 'boundary'
+                try: idx = n*1000+int(fn.replace('boundaries_iter_','').replace('.txt',''))
+                except: pass
+            elif 'ruled_surf_' in fn and fn.endswith('.obj'):
+                tag = 'ruled'
+                try: idx = int(fn.replace('ruled_surf_','').replace('.obj',''))
+                except: pass
+            elif fn == 'corners.txt':
+                tag = 'corners'
+            if tag is None:
+                continue
+            self._rebuild_queue.append((p, tag, idx))
+            self._loaded_paths.add(p)
+        self._rebuild_running = True
+        self._rebuild_gen += 1
+        self._process_rebuild_queue(self._rebuild_gen)
+
+    def _process_rebuild_queue(self, gen):
+        if gen != self._rebuild_gen or self._rebuild_step >= len(self._rebuild_queue):
+            if gen == self._rebuild_gen:
+                self._rebuild_running = False
+                if HAS_PYVISTA:
+                    self._plotter.disable_render = False
+                self._apply_visibility()
+            return
+        p, tag, idx = self._rebuild_queue[self._rebuild_step]
+        try:
+            names = self._load_path(p, tag, idx)
+        except Exception:
+            names = []
+        rlabel = self._active_retry
+        rnode = self._retry_nodes.get(rlabel) if rlabel else None
+        if rnode and names:
+            for tnode in self._find_tree_items(rnode, p):
+                self._item_actors[id(tnode)] = names
+        self._rebuild_step += 1
+        QTimer.singleShot(0, lambda: self._process_rebuild_queue(gen))
 
     def _find_tree_items(self, root, path):
         """Find all tree items under root that reference this path."""

@@ -352,21 +352,33 @@ int splitConcavePartitions(IntArr& faceLabels, const FaceArr& faces,
         const auto& poly = polylines[pid];
         if (poly.size() < 4) { nSkipped++; continue; }
 
+        // Compute polygon diameter (max pairwise distance) for scale normalization
+        double polyDiam = 0.0;
+        int n = (int)poly.size();
+        // Use O(n) approximation: bounding box diagonal
+        double xmin = poly[0].x(), xmax = poly[0].x();
+        double ymin = poly[0].y(), ymax = poly[0].y();
+        for (int i = 1; i < n; ++i) {
+            xmin = std::min(xmin, poly[i].x()); xmax = std::max(xmax, poly[i].x());
+            ymin = std::min(ymin, poly[i].y()); ymax = std::max(ymax, poly[i].y());
+        }
+        polyDiam = std::sqrt((xmax-xmin)*(xmax-xmin) + (ymax-ymin)*(ymax-ymin));
+        if (polyDiam < 1e-8) continue;
+
         // Detect pockets
         auto pockets = detectPockets(poly);
         if (pockets.empty()) continue;
 
-        // Find the deepest pocket with depth/width > threshold
+        // Find the deepest pocket: maxDepth / polyDiam
         int bestPkt = -1;
         double bestRatio = 0.0;
         for (int pi = 0; pi < (int)pockets.size(); ++pi) {
-            double r = pockets[pi].width > 1e-8 ?
-                       pockets[pi].maxDepth / pockets[pi].width : 0;
+            double r = pockets[pi].maxDepth / polyDiam;
             if (r > bestRatio) { bestRatio = r; bestPkt = pi; }
         }
 
         if (bestRatio >= depthRatioThreshold) {
-            std::cout << "    part " << pid << ": max depth/width=" << bestRatio
+            std::cout << "    part " << pid << ": max depth/diam=" << bestRatio
                       << " (pockets=" << pockets.size() << ") -> macro-concave\n";
         }
 
