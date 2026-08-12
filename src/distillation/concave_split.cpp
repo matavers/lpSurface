@@ -367,7 +367,7 @@ int splitConcavePartitions(IntArr& faceLabels, const FaceArr& faces,
 
         if (bestRatio >= depthRatioThreshold) {
             std::cout << "    part " << pid << ": max depth/width=" << bestRatio
-                      << " (pockets=" << pockets.size() << ") → macro-concave\n";
+                      << " (pockets=" << pockets.size() << ") -> macro-concave\n";
         }
 
         if (bestPkt < 0 || bestRatio < depthRatioThreshold) continue;
@@ -384,9 +384,9 @@ int splitConcavePartitions(IntArr& faceLabels, const FaceArr& faces,
                                    pid, nParts, minFaces);
         if (nAssigned > 0) {
             totalSplits++;
-            std::cout << "    → Split partition " << pid << " (type="
+            std::cout << "    -> Split partition " << pid << " (type="
                       << (info.splitType == 1 ? "tip" : "corner")
-                      << "), " << nAssigned << " faces → partition " << (nParts - 1)
+                      << "), " << nAssigned << " faces -> partition " << (nParts - 1)
                       << "\n";
         }
     }

@@ -281,12 +281,12 @@ int main(int argc,char*argv[]){
             // ── Always check concavity, independent of tolerance ──
             int nSplit = splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.2,4);
             if(nSplit>0){
-                std::cout<<", splitting concave → re-smooth same K\n";
+                std::cout<<", splitting concave -> re-smooth same K\n";
                 needEM=false; prevNFail=nFail; continue;
             }
 
-            if(nFail==0){std::cout<<", all pass — done\n";break;}
-            if(retry+1>=maxRetries){std::cout<<", retries exhausted — stop\n";break;}
+            if(nFail==0){std::cout<<", all pass -- done\n";break;}
+            if(retry+1>=maxRetries){std::cout<<", retries exhausted -- stop\n";break;}
 
             if(nFail>=prevNFail){
                 K_parts+=2;needEM=true;std::cout<<", K->"<<K_parts<<"\n";
