@@ -5,6 +5,7 @@
 #include <queue>
 #include <set>
 #include <stack>
+#include <utility>
 
 namespace distillation {
 
@@ -58,6 +59,112 @@ std::vector<int> convexHull2D(const Vec2Arr& pts) {
     }
     if (hull.size() > 1) hull.pop_back(); // last == first
     return hull;
+}
+
+// ═════════════════════════════════════════════════════════════════
+// Closed per-partition loops + local convexity + normalized concavity
+// ═════════════════════════════════════════════════════════════════
+
+std::vector<Vec2Arr> extractPartitionLoops(
+    const IntArr& faceLabels, const FaceArr& faces, const Vec2Arr& uvs, int nParts)
+{
+    std::vector<Vec2Arr> loops(nParts);
+    int nf = (int)faces.size();
+
+    std::vector<IntArr> partFaces(nParts);
+    for (int fi = 0; fi < nf; ++fi) {
+        int l = faceLabels[fi];
+        if (l >= 0 && l < nParts) partFaces[l].push_back(fi);
+    }
+
+    for (int pid = 0; pid < nParts; ++pid) {
+        if (partFaces[pid].empty()) continue;
+
+        // Boundary edges of this partition appear exactly once within its face set
+        std::map<std::pair<int,int>, int> edgeCount;
+        for (int fi : partFaces[pid]) {
+            const Face& f = faces[fi];
+            for (int k = 0; k < 3; ++k) {
+                int a = f[k], b = f[(k + 1) % 3];
+                if (a > b) std::swap(a, b);
+                edgeCount[{a, b}]++;
+            }
+        }
+        std::vector<std::pair<int,int>> bedges;
+        for (auto& e : edgeCount) if (e.second == 1) bedges.push_back(e.first);
+        if (bedges.size() < 4) continue;
+
+        std::map<int, IntArr> adj;
+        for (auto& e : bedges) {
+            adj[e.first].push_back(e.second);
+            adj[e.second].push_back(e.first);
+        }
+
+        // Trace the closed loop (each vertex listed once, implicitly closed)
+        std::vector<int> loop;
+        int cur = adj.begin()->first, prev = -1;
+        for (size_t s = 0; s < bedges.size() + 2; ++s) {
+            loop.push_back(cur);
+            const IntArr& nb = adj[cur];
+            int next = -1;
+            for (int v : nb) if (v != prev) { next = v; break; }
+            if (next < 0 || next == loop[0]) break;
+            prev = cur;
+            cur = next;
+        }
+        if (loop.size() < 4) continue;
+
+        Vec2Arr poly;
+        poly.reserve(loop.size());
+        for (int v : loop) poly.push_back(uvs[v]);
+
+        // Orient CCW (positive signed area) — required by cross-product convexity
+        double area2 = 0.0;
+        for (size_t i = 0; i < poly.size(); ++i) {
+            const Vec2& a = poly[i];
+            const Vec2& b = poly[(i + 1) % poly.size()];
+            area2 += a.x() * b.y() - a.y() * b.x();
+        }
+        if (area2 < 0.0) std::reverse(poly.begin(), poly.end());
+
+        loops[pid] = std::move(poly);
+    }
+    return loops;
+}
+
+/// §2.1.1 cross-product vertex convexity test (assumes CCW closed polygon).
+/// Returns per-vertex: +1 convex (left turn), -1 concave (right turn), 0 collinear.
+static std::vector<int> classifyVertices(const Vec2Arr& poly) {
+    int n = (int)poly.size();
+    std::vector<int> cls(n, 0);
+    if (n < 3) return cls;
+
+    // scale-invariant epsilon: relative to squared mean edge length
+    double meanLenSq = 0.0;
+    for (int i = 0; i < n; ++i)
+        meanLenSq += (poly[(i + 1) % n] - poly[i]).squaredNorm();
+    meanLenSq /= n;
+    double eps = meanLenSq * 1e-12;
+
+    for (int i = 0; i < n; ++i) {
+        const Vec2& p0 = poly[(i + n - 1) % n];
+        const Vec2& p1 = poly[i];
+        const Vec2& p2 = poly[(i + 1) % n];
+        double cr = (p1.x() - p0.x()) * (p2.y() - p1.y())
+                  - (p1.y() - p0.y()) * (p2.x() - p1.x());
+        if (cr > eps)       cls[i] = 1;   // left turn  -> convex
+        else if (cr < -eps) cls[i] = -1;  // right turn -> concave
+        else                cls[i] = 0;   // collinear
+    }
+    return cls;
+}
+
+/// §3.1.3 normalized concavity: concavity ∝ depth^a / width^b.
+/// a=b=1 gives the SL-concavity ratio (depth/width), the dimensionless
+/// significance used to rank/select pockets (deep+wide => low, deep+narrow => high).
+static double normalizedConcavity(double depth, double width, double a = 1.0, double b = 1.0) {
+    if (width < 1e-8 || depth < 1e-12) return 0.0;
+    return std::pow(depth, a) / std::pow(width, b);
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -247,14 +354,16 @@ bool splitCorner(const Vec2Arr& poly, const PocketInfo& pocket, Vec2& p0, Vec2& 
 // ═════════════════════════════════════════════════════════════════
 // Classify pocket and generate split line
 // ═════════════════════════════════════════════════════════════════
-ConcavityInfo classifyPocket(const Vec2Arr& poly, const PocketInfo& pocket, int pid) {
+ConcavityInfo classifyPocket(const Vec2Arr& poly, const PocketInfo& pocket, int pid,
+                             double concavityThreshold) {
     ConcavityInfo info;
     info.pid = pid;
     info.isConcave = false;
     info.splitType = 0;
 
-    double ratio = pocket.width > 1e-8 ? pocket.maxDepth / pocket.width : 0;
-    if (ratio < 0.3) return info;
+    // Stage 2: significance gate via normalized concavity (§3.1.3)
+    double concavity = normalizedConcavity(pocket.maxDepth, pocket.width);
+    if (concavity < concavityThreshold) return info;
 
     // Determine type: check winding of the arc relative to polygon
     // For a pocket, the arc is "inside" relative to the hull edge
@@ -334,73 +443,48 @@ int applySplit(IntArr& faceLabels, const FaceArr& faces,
 }
 
 // ═════════════════════════════════════════════════════════════════
-// Polygon area
-// ═════════════════════════════════════════════════════════════════
-static double polygonArea(const Vec2Arr& poly) {
-    int n = (int)poly.size();
-    double a = 0.0;
-    for (int i = 0; i < n; ++i) {
-        int j = (i + 1) % n;
-        a += poly[i].x() * poly[j].y() - poly[j].x() * poly[i].y();
-    }
-    return std::abs(a) / 2.0;
-}
-
-
-// ═════════════════════════════════════════════════════════════════
 // Main split function
 // ═════════════════════════════════════════════════════════════════
 int splitConcavePartitions(IntArr& faceLabels, const FaceArr& faces,
                            const Vec2Arr& uvs,
                            const std::vector<Vec2Arr>& polylines,
-                           int& nParts, double depthRatioThreshold,
+                           int& nParts, double concavityThreshold,
                            int minFaces) {
     int nPoly = (int)polylines.size();
     int totalSplits = 0;
 
     std::cout << "  [Concave] scanning " << std::min(nParts, nPoly) << " partitions (threshold="
-              << depthRatioThreshold << "):\n";
+              << concavityThreshold << "):\n";
     int nConcave = 0, nSkipped = 0;
 
     for (int pid = 0; pid < nParts && pid < nPoly; ++pid) {
         const auto& poly = polylines[pid];
         if (poly.size() < 4) { nSkipped++; continue; }
 
-        // Macro-concavity: area deficit = 1 - area(poly)/area(hull)
-        double pa = polygonArea(poly);
-        auto hullIdx = convexHull2D(poly);
-        Vec2Arr hullPts; for (int hi : hullIdx) hullPts.push_back(poly[hi]);
-        double ha = polygonArea(hullPts);
-        double deficit = (ha > 1e-12) ? (1.0 - pa / ha) : 0.0;
-
-        if (deficit < depthRatioThreshold) continue;
+        // Stage 1: cross-product vertex convexity (§2.1.1) — quick convex filter
+        std::vector<int> cls = classifyVertices(poly);
+        int nConcaveVerts = 0;
+        for (int c : cls) if (c < 0) ++nConcaveVerts;
+        if (nConcaveVerts == 0) continue;  // convex polygon, nothing to split
 
         // Detect pockets for split line generation
         auto pockets = detectPockets(poly);
         if (pockets.empty()) continue;
 
-        // Find deepest pocket with bounding-box normalization
-        double xmin = poly[0].x(), xmax = poly[0].x();
-        double ymin = poly[0].y(), ymax = poly[0].y();
-        for (size_t i = 1; i < poly.size(); ++i) {
-            if (poly[i].x() < xmin) xmin = poly[i].x();
-            if (poly[i].x() > xmax) xmax = poly[i].x();
-            if (poly[i].y() < ymin) ymin = poly[i].y();
-            if (poly[i].y() > ymax) ymax = poly[i].y();
-        }
-        double bbDiag = std::sqrt((xmax-xmin)*(xmax-xmin) + (ymax-ymin)*(ymax-ymin));
+        // Stage 2: rank pockets by normalized concavity (§3.1.3), not raw depth
         int bestPkt = -1;
-        double bestDepth = 0.0;
+        double bestConcavity = 0.0;
         for (int pi = 0; pi < (int)pockets.size(); ++pi) {
-            if (pockets[pi].maxDepth > bestDepth) { bestDepth = pockets[pi].maxDepth; bestPkt = pi; }
+            double c = normalizedConcavity(pockets[pi].maxDepth, pockets[pi].width);
+            if (c > bestConcavity) { bestConcavity = c; bestPkt = pi; }
         }
         if (bestPkt < 0) continue;
 
-        std::cout << "    part " << pid << ": deficit=" << deficit
-                  << " (depth/bb=" << bestDepth/bbDiag << ") -> macro-concave\n";
+        std::cout << "    part " << pid << ": " << nConcaveVerts << " concave verts"
+                  << " (concavity=" << bestConcavity << ") -> macro-concave\n";
 
         // Classify and get split line
-        ConcavityInfo info = classifyPocket(poly, pockets[bestPkt], pid);
+        ConcavityInfo info = classifyPocket(poly, pockets[bestPkt], pid, concavityThreshold);
         if (!info.isConcave) continue;
 
         nConcave++;

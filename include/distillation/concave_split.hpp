@@ -38,7 +38,8 @@ std::vector<PocketInfo> detectPockets(const Vec2Arr& poly);
 std::vector<int> convexHull2D(const Vec2Arr& pts);
 
 /// For a pocket, determine split type and split line
-ConcavityInfo classifyPocket(const Vec2Arr& poly, const PocketInfo& pocket, int pid);
+ConcavityInfo classifyPocket(const Vec2Arr& poly, const PocketInfo& pocket, int pid,
+                             double concavityThreshold);
 
 /// Split tip: find neck points and return cut line
 bool splitTip(const Vec2Arr& poly, const PocketInfo& pocket, Vec2& p0, Vec2& p1);
@@ -52,12 +53,19 @@ int applySplit(IntArr& faceLabels, const FaceArr& faces,
                const Vec2Arr& uvs, const Vec2& p0, const Vec2& p1,
                int srcPid, int& nParts, int minFaces);
 
-/// Main function: inspect polylines for macro-concave pockets, split as needed
+/// Extract closed per-partition boundary loops (index = pid) from face labels.
+/// Each loop is a simple closed polygon in UV space, oriented CCW, with vertices
+/// listed once (implicitly closed). Loops of invalid/empty partitions are empty.
+/// This is the correct input for 2D polygon concavity analysis (vs. open polylines).
+std::vector<Vec2Arr> extractPartitionLoops(
+    const IntArr& faceLabels, const FaceArr& faces, const Vec2Arr& uvs, int nParts);
+
+/// Main function: inspect closed partition loops for macro-concave pockets, split as needed
 /// Returns number of partitions split (0 = nothing to split)
 int splitConcavePartitions(IntArr& faceLabels, const FaceArr& faces,
                            const Vec2Arr& uvs,
                            const std::vector<Vec2Arr>& polylines,
-                           int& nParts, double depthRatioThreshold = 0.3,
+                           int& nParts, double concavityThreshold = 0.3,
                            int minFaces = 4);
 
 } // namespace distillation

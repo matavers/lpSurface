@@ -193,6 +193,7 @@ int main(int argc,char*argv[]){
         harmonicMeshUpdate(updatedUVs,faces,net);
         Vec3Arr updatedVerts3D=liftMeshTo3D(updatedUVs,nurbs);
         auto polylines2D=extractPolylinesFromNetwork(net);
+        auto partitionLoops=extractPartitionLoops(faceLabels,faces,updatedUVs,nParts);
 
         std::cout<<"  [Step 3] OCCT Splitter...\n";
         auto[reconUVs,reconFaces,reconFaceLabels]=occtConstrainedReconstruct(uvs,faces,faceLabels,net,uMin,uMax,vMin,vMax);
@@ -263,7 +264,7 @@ int main(int argc,char*argv[]){
                 std::cout<<"  [Tol] optimizer did not produce tolerance.txt, treating as all-fail\n";
                 // force retry without reading tolerance
                 if(retry+1<maxRetries){
-                    int nSplit=splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.05,3);
+                    int nSplit=splitConcavePartitions(faceLabels,faces,updatedUVs,partitionLoops,nParts,0.3,3);
                     if(nSplit>0){std::cout<<"  [Split] "<<nSplit<<" partitions split, re-smoothing\n";needEM=false;continue;}
                     K_parts+=2;needEM=true;
                     std::cout<<"  [Tol] no split possible, K->"<<K_parts<<"\n";
@@ -279,7 +280,7 @@ int main(int argc,char*argv[]){
             std::cout<<"  [Tol] "<<nFail<<"/"<<partTols.size()<<" exceed "<<tolTarget;
 
             // ── Always check concavity, independent of tolerance ──
-            int nSplit = splitConcavePartitions(faceLabels,faces,updatedUVs,polylines2D,nParts,0.05,3);
+            int nSplit = splitConcavePartitions(faceLabels,faces,updatedUVs,partitionLoops,nParts,0.3,3);
             if(nSplit>0){
                 std::cout<<", splitting concave -> re-smooth same K\n";
                 needEM=false; prevNFail=nFail; continue;
