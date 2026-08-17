@@ -1,14 +1,15 @@
 """
-简化分割测试：从原始网格到凹性检测+分割可视化
+简化分割测试：从原始网格到拉普拉斯平滑 → 凹性检测 + 分割可视化
 跳过优化器和容差迭代，快速验证凹性检测和分割效果
 
 用法:
-  python test_split.py [--surface wavy] [--K 16] [--threshold 0.03] [--smooth-iters 1]
+  python test_split.py [--surface wavy] [--K 16] [--threshold 0.30] [--smooth-iters 16]
 
 步骤:
-  1. C++ 管线运行一次 (无优化器) → 生成分区 + 平滑边界
-  2. Python 实现凹性检测 → 标记分割区域 + 分割线
-  3. PyVista 交互可视化: 边界/分割线/凹部标记
+  1. C++ 管线运行一次 (无优化器) → 生成分区 + 拉普拉斯平滑后的边界
+     (拉普拉斯平滑复用主流程 C++ 实现，--smooth-iters 控制迭代次数)
+  2. Python 实现凹性检测 (作用于平滑后边界) → 标记分割区域 + 分割线
+  3. PyVista 交互可视化: 原始/平滑边界对比 + 分割线 + 凹部标记
 """
 
 import os, sys, time, subprocess, tempfile, argparse
@@ -284,7 +285,9 @@ def main():
     parser.add_argument('--surface', default='wavy')
     parser.add_argument('--K', type=int, default=16)
     parser.add_argument('--threshold', type=float, default=0.30)
-    parser.add_argument('--smooth-iters', type=int, default=1)
+    parser.add_argument('--smooth-iters', type=int, default=16,
+                        help='Laplacian smoothing iterations in C++ pipeline '
+                             '(16 ~ auto K=ceil((2*sigma/h)^2))')
     args = parser.parse_args()
 
     EXE_PATH = str(EXE)
@@ -376,6 +379,14 @@ def main():
           f"{sum(1 for b in boundaries_3d.values() if len(b) >= 3)} 3D loops, "
           f"{n_parts} partitions")
 
+    # Raw (pre-smoothing) boundary polylines — exported by the C++ pipeline
+    # before its Laplacian smoothing, for side-by-side comparison in the view.
+    raw_bnds_3d = []
+    rfile = data_dir / "boundaries_iter_000.txt"
+    if rfile.exists():
+        raw_bnds_3d = load_boundaries_3d(str(rfile))
+        print(f"Raw boundary polylines (pre-smoothing): {len(raw_bnds_3d)}")
+
     # ── Step 4: Concave detection ──
     concave_results = []
     all_split_lines = []
@@ -445,6 +456,19 @@ def main():
         pl.add_mesh(mesh_part, scalars=face_cols, rgb=True,
                     show_edges=False, opacity=0.88, name='part_surf')
         view_actors[1].append('part_surf')
+    # raw (pre-smoothing) boundary — thin gray for comparison
+    for cid, raw_pts in enumerate(raw_bnds_3d):
+        rp = np.array(raw_pts)
+        if len(rp) < 2:
+            continue
+        rbp = pv.PolyData(rp)
+        nr = len(rp)
+        rbp.lines = np.array([nr] + list(range(nr)), dtype=np.int64)
+        rname = f'v2_raw_{cid}'
+        pl.add_mesh(rbp, color='gray', line_width=1.0,
+                    render_lines_as_tubes=True, opacity=0.5, name=rname)
+        view_actors[2].append(rname)
+
     for pid in pids:
         if pid not in boundaries_3d:
             continue
@@ -568,7 +592,7 @@ def main():
         set_view_visibility, rng=[0, 4], value=1, title="View",
         pointa=(0.02, 0.93), pointb=(0.28, 0.93),
         style='modern')
-    pl.add_text("0:原曲面  1:初始分区  2:凹性+母线  3:切割线  4:再分区",
+    pl.add_text("0:原曲面  1:初始分区  2:凹性(灰=原始/彩=平滑)  3:切割线  4:再分区",
                 position='lower_edge', font_size=10, color='black', name='v_legend')
     set_view_visibility(1)
     pl.show()
