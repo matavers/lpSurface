@@ -223,25 +223,57 @@ def extract_loops_from_faces(face_labels, faces, verts3d, uvs, n_parts):
     return loops_3d, loops_uv
 
 
-def laplacian_smooth_polygon(points, n_iters=16, lam=0.5):
-    """闭合折线 umbrella 拉普拉斯平滑（位移截断，模拟 C++ 主流程）。"""
-    pts = np.asarray(points, dtype=np.float64)
-    n = len(pts)
-    if n < 4:
-        return pts
-    edge_lens = np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1)
-    max_step = edge_lens.mean() * 0.3
+def extract_boundary_adj(face_labels, faces):
+    """提取分区边界网络的邻接表（图结构）。
+    边界边 = 两侧 face label 不同的边，或只被 1 个 face 使用的边（外部边界）。
+    返回 adj：{vertex_idx → [neighbor_idx, ...]}。"""
+    nf = len(faces)
+    edge_faces = {}
+    for fi in range(nf):
+        f = faces[fi]
+        for k in range(3):
+            a, b = f[k], f[(k + 1) % 3]
+            if a > b:
+                a, b = b, a
+            edge_faces.setdefault((a, b), []).append(fi)
+    adj = {}
+    for (a, b), fl in edge_faces.items():
+        is_boundary = (len(fl) == 1) or (
+            len(fl) == 2 and face_labels[fl[0]] != face_labels[fl[1]])
+        if is_boundary:
+            adj.setdefault(a, []).append(b)
+            adj.setdefault(b, []).append(a)
+    return adj
+
+
+def graph_laplacian_smooth(verts, adj, n_iters=16, lam=0.5):
+    """对分区边界网络（图）做拉普拉斯平滑，保留图的连接关系。
+    只平滑边界顶点（adj 中的顶点），内部顶点不动。
+    相邻分区共享的边界顶点被一起平滑，因此平滑后边界仍连接在一起。"""
+    verts = np.asarray(verts, dtype=np.float64).copy()
+    bverts = list(adj.keys())
+    if not bverts:
+        return verts
+    edge_lens = []
+    for v in bverts:
+        for nb in adj[v]:
+            edge_lens.append(np.linalg.norm(verts[v] - verts[nb]))
+    avg_edge = np.mean(edge_lens) if edge_lens else 1.0
+    max_step = avg_edge * 0.3
     for _ in range(n_iters):
-        new_pts = pts.copy()
-        for i in range(n):
-            avg = (pts[(i - 1) % n] + pts[(i + 1) % n]) / 2.0
-            disp = lam * (avg - pts[i])
+        new_verts = verts.copy()
+        for v in bverts:
+            nbs = adj[v]
+            if not nbs:
+                continue
+            avg = np.mean(verts[nbs], axis=0)
+            disp = lam * (avg - verts[v])
             d = np.linalg.norm(disp)
             if d > max_step:
                 disp = disp * (max_step / d)
-            new_pts[i] = pts[i] + disp
-        pts = new_pts
-    return pts
+            new_verts[v] = verts[v] + disp
+        verts = new_verts
+    return verts
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -434,11 +466,14 @@ def main():
                     break  # 每个分区只切一次（取第一条分割线）
         warm_loops_3d, warm_loops_uv = extract_loops_from_faces(
             warm_labels, faces, verts3d, mesh_uv, n_parts_warm)
-        for pid, l3d in warm_loops_3d.items():
-            warm_loops_smoothed[pid] = laplacian_smooth_polygon(l3d, args.smooth_iters, 0.5)
+        # 图拉普拉斯平滑（保留图连接，边界网络一起平滑，避免独立环分离）
+        adj = extract_boundary_adj(warm_labels, faces)
+        smoothed_verts = graph_laplacian_smooth(verts3d, adj, args.smooth_iters, 0.5)
+        warm_loops_smoothed, _ = extract_loops_from_faces(
+            warm_labels, faces, smoothed_verts, mesh_uv, n_parts_warm)
         print(f"  [WarmStart] applySplit: {warm_split_new} splits -> {n_parts_warm} partitions, "
               f"{len(warm_loops_3d)} mesh polylines extracted, "
-              f"{len(warm_loops_smoothed)} smoothed")
+              f"{len(warm_loops_smoothed)} smoothed (graph-connected)")
     else:
         print("  [WarmStart] skipped (need mesh_uv.txt + face_labels.txt + mesh.obj; "
               "rebuild C++ with mesh_uv export)")
