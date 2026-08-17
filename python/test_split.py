@@ -353,11 +353,11 @@ def main():
         segments = cr['segments'] if cr else []
         nv = len(pts)
 
-        # smoothed boundary loop in partition color (thin)
+        # smoothed boundary loop (steel blue, avoid red to not clash with concave marks)
         bp = pv.PolyData(pts)
         bp.lines = np.array([nv] + list(range(nv)), dtype=np.int64)
         bname = f'v2_bnd3d_{pid}'
-        pl.add_mesh(bp, color=TAB10[pid % 10], line_width=1.5,
+        pl.add_mesh(bp, color='steelblue', line_width=1.5,
                     render_lines_as_tubes=True, name=bname)
         view_actors[2].append(bname)
 
@@ -428,13 +428,32 @@ def main():
 
     for cid, bnd in enumerate(warm_bnds):
         pts = np.array(bnd)
+        nv = len(pts)
         wn = f'v4_ws_{cid}'
         bp = pv.PolyData(pts)
-        nv = len(pts)
-        bp.lines = np.array([nv] + list(range(nv)), dtype=np.int64)
+        # 闭合折线：闭合边即分割线（热启动新边界）
+        bp.lines = np.array([nv + 1] + list(range(nv)) + [0], dtype=np.int64)
         pl.add_mesh(bp, color=TAB10[cid % 10], line_width=2,
                     render_lines_as_tubes=True, name=wn)
         view_actors[4].append(wn)
+
+    # 分割线（黑色粗线，突出热启动切分位置）
+    for idx, (pid, (p0, p1)) in enumerate(all_split_lines):
+        if pid not in boundaries_uv or pid not in boundaries_3d:
+            continue
+        uv_arr = np.array(boundaries_uv[pid])
+        pts3d = np.array(boundaries_3d[pid])
+        if len(uv_arr) != len(pts3d):
+            continue
+        d0 = np.linalg.norm(uv_arr - np.array(p0), axis=1)
+        d1 = np.linalg.norm(uv_arr - np.array(p1), axis=1)
+        i0, i1 = np.argmin(d0), np.argmin(d1)
+        seg = np.array([pts3d[i0], pts3d[i1]])
+        s = pv.PolyData(seg)
+        s.lines = np.array([2, 0, 1], dtype=int)
+        sname = f'v4_cut_{idx}'
+        pl.add_mesh(s, color='black', line_width=4, name=sname)
+        view_actors[4].append(sname)
     if not warm_bnds:
         ta = pl.add_text("No warm-start data", position='upper_right',
                          font_size=14, color='gray', name='v4_nodata')
@@ -456,7 +475,7 @@ def main():
         set_view_visibility, rng=[0, 4], value=1, title="View",
         pointa=(0.02, 0.93), pointb=(0.28, 0.93),
         style='modern')
-    pl.add_text("0:原曲面  1:初始分区  2:凹线段(灰=原始/彩=平滑/红=凹)  3:切割线  4:热启动再分区",
+    pl.add_text("0:原曲面  1:初始分区  2:凹线段(灰=原始/蓝=平滑/红=凹)  3:切割线  4:热启动再分区",
                 position='lower_edge', font_size=10, color='black', name='v_legend')
     set_view_visibility(1)
     pl.show()

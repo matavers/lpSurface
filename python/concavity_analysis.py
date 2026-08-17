@@ -284,6 +284,15 @@ def normalized_concavity(depth, width, a=1.0, b=1.0, use_log=False):
     return depth ** a / width ** b
 
 
+def pocket_concavity(poly, pocket):
+    """口袋的归一化凹度：深度取 SL 与 SP 凹度的较大者（§3.1.2）。
+    SP 凹度对"宽而深"的凹更准确（SL 垂直距离会低估），因此取 max(sl, sp)。"""
+    depth_sl = sl_concavity(poly, pocket)
+    depth_sp = sp_concavity(poly, pocket)
+    depth = max(depth_sl, depth_sp)
+    return normalized_concavity(depth, pocket['width'])
+
+
 # ═══════════════════════════════════════════════════════════════
 # §3.2.1 多尺度邻域曲率
 # ═══════════════════════════════════════════════════════════════
@@ -402,14 +411,19 @@ def split_corner(poly, pocket):
 
 def classify_pocket(poly, pocket, concavity_threshold=0.3):
     """对口袋判断 tip/corner 并生成分割线。返回 (split_type, (p0,p1)) 或 (0, None)。
-    1=tip（切尖），2=corner（切角）。"""
+    1=tip（切尖），2=corner（切角）。
+
+    显著性门限用 pocket_concavity（max(SL,SP) / width）；单顶点/双顶点伪口袋
+    （arc<3）直接忽略。"""
     poly = np.asarray(poly, dtype=np.float64)
-    depth = sl_concavity(poly, pocket)
-    if normalized_concavity(depth, pocket['width']) < concavity_threshold:
+    arc = pocket['arc']
+    if len(arc) < 3:
+        return 0, None
+
+    if pocket_concavity(poly, pocket) < concavity_threshold:
         return 0, None
 
     pA, pB = pocket['start'], pocket['end']
-    arc = pocket['arc']
     area2 = poly[pA][0] * poly[pB][1] - poly[pA][1] * poly[pB][0]
     prev = poly[pB]
     for vi in arc:
@@ -503,8 +517,10 @@ def ph_persistence(poly, max_points=200):
 # §4.1 近似凸分解 (ACD)
 # ═══════════════════════════════════════════════════════════════
 
-def split_polygon_by_chord(poly, i0, i1):
-    """用弦 (i0, i1) 把闭合多边形切成两个子多边形（顶点坐标列表）。
+def split_polygon_by_chord(poly, i0, i1, p0=None, p1=None):
+    """用分割线 (p0, p1) 把闭合多边形切成两个子多边形。
+    i0/i1 是分割线端点在 poly 上的最近顶点索引（确定边界分段点）。
+    子多边形顶点显式含真实分割线端点 p0/p1，闭合边即分割线。
     返回 [subA, subB] 或 None。"""
     poly = np.asarray(poly, dtype=np.float64)
     n = len(poly)
@@ -512,8 +528,12 @@ def split_polygon_by_chord(poly, i0, i1):
         return None
     if i0 > i1:
         i0, i1 = i1, i0
-    subA = poly[i0:i1 + 1]
-    subB = np.vstack([poly[i1:], poly[:i0 + 1]])
+    q0 = np.asarray(p0, dtype=np.float64) if p0 is not None else poly[i0]
+    q1 = np.asarray(p1, dtype=np.float64) if p1 is not None else poly[i1]
+    # 子多边形 A：q0 -> poly[i0+1..i1-1] -> q1（闭合边 q1->q0 即分割线）
+    subA = np.vstack([q0, poly[i0 + 1:i1], q1])
+    # 子多边形 B：q1 -> poly[i1+1..n-1, 0..i0-1] -> q0（闭合边 q0->q1 即分割线）
+    subB = np.vstack([q1, poly[i1 + 1:], poly[:i0], q0])
     if len(subA) < 4 or len(subB) < 4:
         return None
     return [subA, subB]
@@ -533,7 +553,9 @@ def _single_decompose(poly, tau):
     best = None
     best_conc = 0.0
     for pkt in pockets:
-        conc = normalized_concavity(sl_concavity(poly, pkt), pkt['width'])
+        if len(pkt['arc']) < 3:
+            continue
+        conc = pocket_concavity(poly, pkt)
         if conc > best_conc:
             best_conc = conc
             best = pkt
@@ -546,7 +568,7 @@ def _single_decompose(poly, tau):
     p0, p1 = sl
     i0 = int(np.argmin(np.linalg.norm(poly - np.array(p0), axis=1)))
     i1 = int(np.argmin(np.linalg.norm(poly - np.array(p1), axis=1)))
-    return split_polygon_by_chord(poly, i0, i1)
+    return split_polygon_by_chord(poly, i0, i1, p0, p1)
 
 
 def acd_decompose(poly, tau=0.3, max_depth=4):
