@@ -87,11 +87,6 @@ def detect_pockets(poly):
     return pockets
 
 
-def compute_poly_diam(poly):
-    xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
-    return np.sqrt((max(xs)-min(xs))**2 + (max(ys)-min(ys))**2)
-
-
 def split_tip(poly, pocket):
     arc = pocket['arc']
     m = len(arc)
@@ -238,7 +233,7 @@ def load_obj(path):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Concavity detection (area-deficit based)
+# Polygon area / convex hull helpers
 # ═══════════════════════════════════════════════════════════════
 
 def polygon_area(poly):
@@ -256,25 +251,132 @@ def convex_hull_area(poly):
     hpts = [poly[i] for i in hull]
     return polygon_area(hpts)
 
-def detect_concave(poly, threshold=0.05):
-    """Returns (is_concave, deficit, split_info).
-    split_info = (split_type, split_line) or None."""
-    pa = polygon_area(poly)
-    ha = convex_hull_area(poly)
-    if ha < 1e-12: return False, 0, None
-    deficit = 1.0 - pa / ha
-    if deficit <= threshold: return False, deficit, None
 
-    pockets = detect_pockets(poly)
-    if not pockets: return True, deficit, None
-    diam = compute_poly_diam(poly)
-    best_ratio = 0; best_pkt = None
-    for pi, pkt in enumerate(pockets):
-        r = pkt['depth'] / diam
-        if r > best_ratio: best_ratio = r; best_pkt = pi
-    if best_pkt is None: return True, deficit, None
-    split_type, split_line = classify_pocket(poly, pockets[best_pkt])
-    return True, deficit, (split_type, split_line)
+# ═══════════════════════════════════════════════════════════════
+# Vertex-level concavity (cross product §2.1.1) + warm-start split
+# ═══════════════════════════════════════════════════════════════
+
+def orient_loops_ccw(poly_uv, poly_3d=None):
+    """Ensure the UV loop is CCW (signed area > 0), flipping the 3D loop in sync.
+    Returns (uv_ccw, p3d_ccw_or_None)."""
+    poly_uv = np.asarray(poly_uv, dtype=np.float64)
+    n = len(poly_uv)
+    if n < 3:
+        p3 = np.asarray(poly_3d, dtype=np.float64) if poly_3d is not None else None
+        return poly_uv, p3
+    area2 = sum(poly_uv[i][0] * poly_uv[(i + 1) % n][1]
+                - poly_uv[i][1] * poly_uv[(i + 1) % n][0] for i in range(n))
+    if area2 >= 0:
+        p3 = np.asarray(poly_3d, dtype=np.float64) if poly_3d is not None else None
+        return poly_uv, p3
+    p3 = None
+    if poly_3d is not None:
+        arr = np.asarray(poly_3d, dtype=np.float64)
+        if len(arr) == n:
+            p3 = arr[::-1]
+    return poly_uv[::-1], p3
+
+
+def classify_vertices(poly):
+    """§2.1.1 cross-product vertex convexity test (CCW closed polygon).
+    Returns list: +1 convex, -1 concave, 0 collinear."""
+    poly = np.asarray(poly, dtype=np.float64)
+    n = len(poly)
+    cls = [0] * n
+    if n < 3:
+        return cls
+    mean_len_sq = sum(np.linalg.norm(poly[(i + 1) % n] - poly[i]) ** 2 for i in range(n)) / n
+    eps = mean_len_sq * 1e-12
+    for i in range(n):
+        p0, p1, p2 = poly[(i - 1) % n], poly[i], poly[(i + 1) % n]
+        cr = (p1[0] - p0[0]) * (p2[1] - p1[1]) - (p1[1] - p0[1]) * (p2[0] - p1[0])
+        if cr > eps:
+            cls[i] = 1
+        elif cr < -eps:
+            cls[i] = -1
+        else:
+            cls[i] = 0
+    return cls
+
+
+def concave_runs(cls):
+    """Contiguous runs of concave (-1) vertices, circular-aware.
+    Returns [(start, end), ...] (closed interval indices)."""
+    n = len(cls)
+    if not any(c < 0 for c in cls):
+        return []
+    runs = []
+    start = None
+    for i in range(n):
+        if cls[i] < 0:
+            if start is None:
+                start = i
+        elif start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, n - 1))
+    # merge the run that wraps around the loop start/end
+    if len(runs) >= 2 and runs[0][0] == 0 and runs[-1][1] == n - 1:
+        runs = [(runs[-1][0], runs[0][1])] + runs[1:-1]
+    return runs
+
+
+def analyze_partition(poly_ccw, threshold=0.30, min_run_len=3):
+    """Concavity analysis on a CCW closed polygon (smoothed boundary).
+    Returns dict: cls / runs / deficit / split_lines.
+    min_run_len filters out micro-concavities (isolated concave vertices left
+    by Laplacian smoothing residue) so only macro concave segments remain."""
+    cls = classify_vertices(poly_ccw)
+    n = len(cls)
+    runs = []
+    for s, e in concave_runs(cls):
+        ln = (e - s + 1) if e >= s else (n - s + e + 1)
+        if ln >= min_run_len:
+            runs.append((s, e))
+
+    pa = polygon_area(poly_ccw)
+    ha = convex_hull_area(poly_ccw)
+    deficit = (1.0 - pa / ha) if ha > 1e-12 else 0.0
+
+    split_lines = []
+    if runs:
+        pockets = detect_pockets(poly_ccw)
+        for pkt in pockets:
+            if pkt['width'] < 1e-8:
+                continue
+            # normalized concavity depth/width as significance gate
+            if pkt['depth'] / pkt['width'] < 0.3:
+                continue
+            st, sl = classify_pocket(poly_ccw, pkt)
+            if sl:
+                split_lines.append((st, sl[0], sl[1]))
+
+    return {'cls': cls, 'runs': runs, 'deficit': deficit, 'split_lines': split_lines}
+
+
+def split_loop_by_line(poly_uv, poly_3d, p0, p1):
+    """Split a closed loop into two 3D sub-loops along the chord p0-p1 (warm-start).
+    poly_uv/poly_3d are 1:1 (same vertex order); p0/p1 are in UV space.
+    Returns [subA_3d, subB_3d] (implicitly closed), or None on failure."""
+    uv = np.asarray(poly_uv, dtype=np.float64)
+    p3d = np.asarray(poly_3d, dtype=np.float64)
+    n = len(uv)
+    if n < 4 or len(p3d) != n:
+        return None
+    p0 = np.asarray(p0, dtype=np.float64)
+    p1 = np.asarray(p1, dtype=np.float64)
+    i0 = int(np.argmin(np.linalg.norm(uv - p0, axis=1)))
+    i1 = int(np.argmin(np.linalg.norm(uv - p1, axis=1)))
+    if i0 == i1:
+        return None
+    if i0 > i1:
+        i0, i1 = i1, i0
+    subA = p3d[i0:i1 + 1]
+    subB = np.vstack([p3d[i1:], p3d[:i0 + 1]])
+    if len(subA) < 4 or len(subB) < 4:
+        return None
+    return [subA, subB]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -387,9 +489,9 @@ def main():
         raw_bnds_3d = load_boundaries_3d(str(rfile))
         print(f"Raw boundary polylines (pre-smoothing): {len(raw_bnds_3d)}")
 
-    # ── Step 4: Concave detection ──
-    concave_results = []
-    all_split_lines = []
+    # ── Step 4: Concave detection (vertex-level, on smoothed boundaries) ──
+    concave_results = {}   # pid → analysis dict
+    all_split_lines = []   # [(pid, (p0, p1)), ...]
 
     colors = np.zeros((n_parts, 3))
     for i in range(n_parts):
@@ -398,31 +500,33 @@ def main():
     for pid in pids:
         poly = boundaries_uv[pid]
         if not poly or len(poly) < 3:
-            concave_results.append({'pid': pid, 'deficit': 0, 'concave': False,
-                                    'split_type': 0, 'split_line': None, 'poly': poly})
+            concave_results[pid] = {'cls': [], 'runs': [], 'deficit': 0, 'split_lines': []}
             continue
-        is_concave, deficit, split_info = detect_concave(poly, args.threshold)
-        split_type, split_line = split_info if split_info else (0, None)
 
-        concave_results.append({
-            'pid': pid, 'deficit': deficit,
-            'concave': is_concave, 'split_type': split_type,
-            'split_line': split_line, 'poly': poly,
-        })
+        # Orient CCW (UV + 3D in sync) so the cross-product sign is meaningful
+        uv_ccw, b3d_ccw = orient_loops_ccw(poly, boundaries_3d.get(pid))
+        boundaries_uv[pid] = uv_ccw
+        if b3d_ccw is not None:
+            boundaries_3d[pid] = b3d_ccw
 
-        status = f"CONCAVE (deficit={deficit:.3f}, {'tip' if split_type==1 else 'corner'}, split={'OK' if split_line else 'FAILED'})" if is_concave else f"convex (deficit={deficit:.5f})"
-        print(f"  part {pid}: {status}")
-        if split_line:
-            all_split_lines.append((pid, split_line))
+        res = analyze_partition(uv_ccw, args.threshold)
+        res['poly'] = uv_ccw
+        concave_results[pid] = res
 
-    deficits = [r['deficit'] for r in concave_results]
-    n_concave = sum(1 for r in concave_results if r['concave'])
-    print(f"\nConcavity summary (threshold={args.threshold}): "
-          f"{n_concave}/{len(concave_results)} concave, "
-          f"deficit range=[{min(deficits):.4f}, {max(deficits):.4f}], "
-          f"mean={np.mean(deficits):.4f}")
-    print(f"(deficit = 1 - polygon_area/convex_hull_area)")
-    print(f"(lower deficit → closer to convex; threshold={args.threshold}: deficit > this → concave)")
+        n_runs = len(res['runs'])
+        n_splits = len(res['split_lines'])
+        print(f"  part {pid}: deficit={res['deficit']:.4f}, "
+              f"{n_runs} concave segment(s), {n_splits} split line(s)")
+        for st, p0, p1 in res['split_lines']:
+            all_split_lines.append((pid, (p0, p1)))
+
+    n_concave = sum(1 for r in concave_results.values() if r['runs'])
+    deficits = [r['deficit'] for r in concave_results.values()]
+    print(f"\nConcavity summary: {n_concave}/{len(concave_results)} partitions with concave segments, "
+          f"{len(all_split_lines)} split line(s) generated")
+    if deficits:
+        print(f"deficit range=[{min(deficits):.4f}, {max(deficits):.4f}], "
+              f"mean={np.mean(deficits):.4f}")
 
     # ── Step 5: Interactive Visualization ──
     pv.set_plot_theme("document")
@@ -474,40 +578,34 @@ def main():
             continue
         bnd3d = boundaries_3d[pid]
         pts = np.array(bnd3d)
-        cr = concave_results[pid] if pid < len(concave_results) else None
-        is_concave = bool(cr and cr['concave'])
-        color = 'red' if is_concave else TAB10[pid % 10]
-        lw = 3 if is_concave else 1.5
-        bname = f'v2_bnd3d_{pid}'
-        bp = pv.PolyData(pts)
+        cr = concave_results.get(pid)
+        runs = cr['runs'] if cr else []
         nv = len(pts)
+
+        # smoothed boundary loop in partition color (thin)
+        bp = pv.PolyData(pts)
         bp.lines = np.array([nv] + list(range(nv)), dtype=np.int64)
-        pl.add_mesh(bp, color=color, line_width=lw,
+        bname = f'v2_bnd3d_{pid}'
+        pl.add_mesh(bp, color=TAB10[pid % 10], line_width=1.5,
                     render_lines_as_tubes=True, name=bname)
         view_actors[2].append(bname)
-        # Ruling direction line in 3D (from arc midpoint to chord midpoint)
-        if is_concave and pid in boundaries_uv:
-            poly_uv = boundaries_uv[pid]
-            diams = compute_poly_diam(poly_uv) + 1e-12
-            best_pkt = None; best_r = 0
-            for pkt in detect_pockets(poly_uv):
-                r = pkt['depth'] / diams
-                if r > best_r:
-                    best_r = r; best_pkt = pkt
-            if best_pkt and best_pkt['arc']:
-                ia = best_pkt['start']
-                ib = best_pkt['end']
-                im = best_pkt['arc'][len(best_pkt['arc']) // 2]
-                if ia < len(pts) and ib < len(pts) and im < len(pts):
-                    va3 = pts[ia]
-                    vb3 = pts[ib]
-                    vm3 = pts[im]
-                    vc3 = (va3 + vb3) * 0.5
-                    rd = pv.PolyData(np.array([vm3, vc3]))
-                    rd.lines = np.array([2, 0, 1], dtype=np.int64)
-                    rname = f'v2_rule_{pid}'
-                    pl.add_mesh(rd, color='cyan', line_width=2.5, name=rname)
-                    view_actors[2].append(rname)
+
+        # mark concave segments (vertex clusters judged concave) in red
+        for ri, (s, e) in enumerate(runs):
+            if s <= e:
+                seg_idx = list(range(s, e + 1))
+            else:
+                seg_idx = list(range(s, nv)) + list(range(0, e + 1))
+            seg_pts = pts[seg_idx]
+            ns = len(seg_pts)
+            if ns < 2:
+                continue
+            seg_bp = pv.PolyData(seg_pts)
+            seg_bp.lines = np.array([ns] + list(range(ns)), dtype=np.int64)
+            rname = f'v2_concave_{pid}_{ri}'
+            pl.add_mesh(seg_bp, color='red', line_width=4,
+                        render_lines_as_tubes=True, name=rname)
+            view_actors[2].append(rname)
 
     # --- View 3: Surface bg + boundary + cutting lines (3D) ---
     for pid in pids:
@@ -544,24 +642,25 @@ def main():
         pl.add_mesh(s, color='black', line_width=4, name=sname)
         view_actors[3].append(sname)
 
-    # --- View 4: Warm-start (locally split 3D boundaries) ---
-    # build new boundary set after applying splits
-    from collections import defaultdict
-    split_groups = defaultdict(list)  # pid → [split_line, ...]
+    # --- View 4: Warm-start (apply concave splits → re-partition) ---
+    split_map = {}  # pid → list of (p0, p1) split lines
     for pid, sl in all_split_lines:
-        split_groups[pid].append(sl)
-    # Also try to load retry_1 for real warm-start data
+        split_map.setdefault(pid, []).append(sl)
+
     warm_bnds = []
-    if len(retry_dirs) >= 2:
-        wfile = retry_dirs[1] / "boundaries.txt"
-        if wfile.exists():
-            warm_bnds = load_boundaries_3d(str(wfile))
-    if not warm_bnds and boundaries_3d:
-        # apply locally computed splits
-        for pid in pids:
-            if pid in split_groups:
+    for pid in pids:
+        uv_poly = boundaries_uv.get(pid)
+        b3d = boundaries_3d.get(pid)
+        if b3d is None:
+            continue
+        # split concave partitions along the first generated split line
+        if pid in split_map and uv_poly is not None:
+            subs = split_loop_by_line(uv_poly, b3d, *split_map[pid][0])
+            if subs:
+                warm_bnds.extend(subs)
                 continue
-            warm_bnds.append(boundaries_3d[pid])
+        warm_bnds.append(np.array(b3d))
+
     for cid, bnd in enumerate(warm_bnds):
         pts = np.array(bnd)
         wn = f'v4_ws_{cid}'
@@ -592,7 +691,7 @@ def main():
         set_view_visibility, rng=[0, 4], value=1, title="View",
         pointa=(0.02, 0.93), pointb=(0.28, 0.93),
         style='modern')
-    pl.add_text("0:原曲面  1:初始分区  2:凹性(灰=原始/彩=平滑)  3:切割线  4:再分区",
+    pl.add_text("0:原曲面  1:初始分区  2:凹线段(灰=原始/彩=平滑/红=凹)  3:切割线  4:热启动再分区",
                 position='lower_edge', font_size=10, color='black', name='v_legend')
     set_view_visibility(1)
     pl.show()
