@@ -17,6 +17,8 @@ import numpy as np
 import pyvista as pv
 from pathlib import Path
 
+import concavity_analysis as ca
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 EXE = SCRIPT_DIR.parent / "build" / "Release" / "distillation.exe"
 
@@ -27,139 +29,8 @@ TAB10 = np.array([
 ])
 
 
-# ═══════════════════════════════════════════════════════════════
-# 2D Convex Hull (Andrew's monotone chain)
-# ═══════════════════════════════════════════════════════════════
-def cross2d(o, a, b):
-    return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
-
-
-def convex_hull_2d(pts):
-    n = len(pts)
-    if n < 3: return list(range(n))
-    idx = sorted(range(n), key=lambda i: (pts[i][0], pts[i][1]))
-    hull = []
-    for i in range(n):
-        while len(hull) >= 2 and cross2d(pts[hull[-2]], pts[hull[-1]], pts[idx[i]]) <= 0:
-            hull.pop()
-        hull.append(idx[i])
-    lower = len(hull)
-    for i in range(n-2, -1, -1):
-        while len(hull) > lower and cross2d(pts[hull[-2]], pts[hull[-1]], pts[idx[i]]) <= 0:
-            hull.pop()
-        hull.append(idx[i])
-    if len(hull) > 1: hull.pop()
-    return hull
-
-
-def point_to_line_dist(p, a, b):
-    ab = np.array(b) - np.array(a)
-    l2 = ab.dot(ab)
-    if l2 < 1e-12: return np.linalg.norm(np.array(p) - np.array(a))
-    t = max(0, min(1, np.dot(np.array(p) - np.array(a), ab) / l2))
-    proj = np.array(a) + t * ab
-    return np.linalg.norm(np.array(p) - proj)
-
-
-def detect_pockets(poly):
-    n = len(poly)
-    if n < 4: return []
-    hull = convex_hull_2d(poly)
-    h = len(hull)
-    if h < 3: return []
-    hull_set = set(hull)
-
-    pockets = []
-    for hi in range(h):
-        hnext = (hi + 1) % h
-        pA, pB = hull[hi], hull[hnext]
-        arc = []
-        cur = (pA + 1) % n
-        while cur != pB:
-            arc.append(cur)
-            cur = (cur + 1) % n
-            if len(arc) > n: break
-        if not arc: continue
-        max_depth = max(point_to_line_dist(poly[vi], poly[pA], poly[pB]) for vi in arc) if arc else 0
-        width = np.linalg.norm(np.array(poly[pA]) - np.array(poly[pB]))
-        pockets.append({'start': pA, 'end': pB, 'arc': arc,
-                        'depth': max_depth, 'width': width})
-    return pockets
-
-
-def split_tip(poly, pocket):
-    arc = pocket['arc']
-    m = len(arc)
-    if m < 4: return None
-    best_ratio = None
-    best_pair = None
-    for i in range(m):
-        for j in range(i+3, m):
-            a, b = poly[arc[i]], poly[arc[j]]
-            chord = np.array(b) - np.array(a)
-            cl = np.linalg.norm(chord)
-            if cl < 1e-8: continue
-            maxd = max(point_to_line_dist(poly[arc[k]], a, b) for k in range(i+1, j))
-            if maxd < 1e-8: maxd = 1e-8
-            ratio = cl / maxd
-            if best_ratio is None or ratio < best_ratio:
-                best_ratio = ratio; best_pair = (arc[i], arc[j])
-    if best_pair is None: return None
-    return (np.array(poly[best_pair[0]]), np.array(poly[best_pair[1]]))
-
-
-def split_corner(poly, pocket):
-    arc, pA, pB = pocket['arc'], pocket['start'], pocket['end']
-    if not arc: return None
-    deepest = max(arc, key=lambda vi: point_to_line_dist(poly[vi], poly[pA], poly[pB]))
-    vd = np.array(poly[deepest]); n = len(poly)
-    vp = np.array(poly[(deepest+n-1)%n])
-    vn = np.array(poly[(deepest+1)%n])
-    indir = vd - vp; outdir = vn - vd
-    indir = indir / (np.linalg.norm(indir)+1e-12)
-    outdir = outdir / (np.linalg.norm(outdir)+1e-12)
-    bis = indir + outdir
-    bl = np.linalg.norm(bis)
-    if bl < 1e-12: return None
-    bis = bis / bl
-    edge = np.array(poly[pB]) - np.array(poly[pA])
-    if bis[0]*edge[1] - bis[1]*edge[0] < 0: bis = -bis
-    max_ray = np.linalg.norm(np.array(poly[pA]) - np.array(poly[pB])) * 2
-    best_t = None; best_hit = None
-    for i in range(n):
-        j = (i+1)%n
-        if i == deepest or j == deepest: continue
-        if i == (deepest+n-1)%n or j == (deepest+1)%n: continue
-        s1, e1 = np.array(poly[i]), np.array(poly[j])
-        d1 = e1 - s1; d2 = bis * max_ray
-        cross = d1[0]*d2[1] - d1[1]*d2[0]
-        if abs(cross) < 1e-12: continue
-        t = ((vd[0]-s1[0])*d2[1] - (vd[1]-s1[1])*d2[0]) / cross
-        u = ((vd[0]-s1[0])*d1[1] - (vd[1]-s1[1])*d1[0]) / cross
-        if 0 <= t <= 1 and u > 1e-3:
-            hit = vd + u * d2
-            if best_t is None or u < best_t:
-                best_t = u; best_hit = hit
-    if best_hit is None: return None
-    return (vd, best_hit)
-
-
-def classify_pocket(poly, pocket):
-    """Returns (split_type, split_line) or (0, None). 1=tip, 2=corner."""
-    pA, pB = pocket['start'], pocket['end']
-    arc = pocket['arc']
-    area2 = np.array(poly[pA])[0]*np.array(poly[pB])[1] - np.array(poly[pA])[1]*np.array(poly[pB])[0]
-    prev = np.array(poly[pB])
-    for vi in arc:
-        p = np.array(poly[vi])
-        area2 += prev[0]*p[1] - prev[1]*p[0]
-        prev = p
-    if area2 > 0:
-        sl = split_tip(poly, pocket)
-        return (1, sl) if sl else (0, None)
-    else:
-        sl = split_corner(poly, pocket)
-        return (2, sl) if sl else (0, None)
+# 2D 凸包 / 口袋 / 分割线 / 顶点凹凸等凹性分析算法
+# 已迁移到 concavity_analysis 模块（多尺度凹区域分析）。
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -233,27 +104,8 @@ def load_obj(path):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Polygon area / convex hull helpers
-# ═══════════════════════════════════════════════════════════════
-
-def polygon_area(poly):
-    """Absolute area of closed polygon."""
-    n = len(poly)
-    a = 0.0
-    for i in range(n):
-        j = (i+1)%n
-        a += poly[i][0]*poly[j][1] - poly[j][0]*poly[i][1]
-    return abs(a) / 2.0
-
-def convex_hull_area(poly):
-    """Area of convex hull."""
-    hull = convex_hull_2d(poly)
-    hpts = [poly[i] for i in hull]
-    return polygon_area(hpts)
-
-
-# ═══════════════════════════════════════════════════════════════
-# Vertex-level concavity (cross product §2.1.1) + warm-start split
+# UV/3D 同步定向 + 热启动切分（3D 相关，保留在 test_split 侧；
+# 纯 2D 凹性分析算法在 concavity_analysis 模块）
 # ═══════════════════════════════════════════════════════════════
 
 def orient_loops_ccw(poly_uv, poly_3d=None):
@@ -277,106 +129,14 @@ def orient_loops_ccw(poly_uv, poly_3d=None):
     return poly_uv[::-1], p3
 
 
-def classify_vertices(poly):
-    """§2.1.1 cross-product vertex convexity test (CCW closed polygon).
-    Returns list: +1 convex, -1 concave, 0 collinear."""
-    poly = np.asarray(poly, dtype=np.float64)
-    n = len(poly)
-    cls = [0] * n
-    if n < 3:
-        return cls
-    mean_len_sq = sum(np.linalg.norm(poly[(i + 1) % n] - poly[i]) ** 2 for i in range(n)) / n
-    eps = mean_len_sq * 1e-12
-    for i in range(n):
-        p0, p1, p2 = poly[(i - 1) % n], poly[i], poly[(i + 1) % n]
-        cr = (p1[0] - p0[0]) * (p2[1] - p1[1]) - (p1[1] - p0[1]) * (p2[0] - p1[0])
-        if cr > eps:
-            cls[i] = 1
-        elif cr < -eps:
-            cls[i] = -1
-        else:
-            cls[i] = 0
-    return cls
-
-
-def concave_runs(cls):
-    """Contiguous runs of concave (-1) vertices, circular-aware.
-    Returns [(start, end), ...] (closed interval indices)."""
-    n = len(cls)
-    if not any(c < 0 for c in cls):
-        return []
-    runs = []
-    start = None
-    for i in range(n):
-        if cls[i] < 0:
-            if start is None:
-                start = i
-        elif start is not None:
-            runs.append((start, i - 1))
-            start = None
-    if start is not None:
-        runs.append((start, n - 1))
-    # merge the run that wraps around the loop start/end
-    if len(runs) >= 2 and runs[0][0] == 0 and runs[-1][1] == n - 1:
-        runs = [(runs[-1][0], runs[0][1])] + runs[1:-1]
-    return runs
-
-
-def analyze_partition(poly_ccw, threshold=0.30, min_run_len=3):
-    """Concavity analysis on a CCW closed polygon (smoothed boundary).
-    Returns dict: cls / runs / deficit / split_lines.
-    min_run_len filters out micro-concavities (isolated concave vertices left
-    by Laplacian smoothing residue) so only macro concave segments remain."""
-    cls = classify_vertices(poly_ccw)
-    n = len(cls)
-    runs = []
-    for s, e in concave_runs(cls):
-        ln = (e - s + 1) if e >= s else (n - s + e + 1)
-        if ln >= min_run_len:
-            runs.append((s, e))
-
-    pa = polygon_area(poly_ccw)
-    ha = convex_hull_area(poly_ccw)
-    deficit = (1.0 - pa / ha) if ha > 1e-12 else 0.0
-
-    split_lines = []
-    if runs:
-        pockets = detect_pockets(poly_ccw)
-        for pkt in pockets:
-            if pkt['width'] < 1e-8:
-                continue
-            # normalized concavity depth/width as significance gate
-            if pkt['depth'] / pkt['width'] < 0.3:
-                continue
-            st, sl = classify_pocket(poly_ccw, pkt)
-            if sl:
-                split_lines.append((st, sl[0], sl[1]))
-
-    return {'cls': cls, 'runs': runs, 'deficit': deficit, 'split_lines': split_lines}
-
-
-def split_loop_by_line(poly_uv, poly_3d, p0, p1):
-    """Split a closed loop into two 3D sub-loops along the chord p0-p1 (warm-start).
-    poly_uv/poly_3d are 1:1 (same vertex order); p0/p1 are in UV space.
-    Returns [subA_3d, subB_3d] (implicitly closed), or None on failure."""
-    uv = np.asarray(poly_uv, dtype=np.float64)
-    p3d = np.asarray(poly_3d, dtype=np.float64)
-    n = len(uv)
-    if n < 4 or len(p3d) != n:
-        return None
-    p0 = np.asarray(p0, dtype=np.float64)
-    p1 = np.asarray(p1, dtype=np.float64)
-    i0 = int(np.argmin(np.linalg.norm(uv - p0, axis=1)))
-    i1 = int(np.argmin(np.linalg.norm(uv - p1, axis=1)))
-    if i0 == i1:
-        return None
-    if i0 > i1:
-        i0, i1 = i1, i0
-    subA = p3d[i0:i1 + 1]
-    subB = np.vstack([p3d[i1:], p3d[:i0 + 1]])
-    if len(subA) < 4 or len(subB) < 4:
-        return None
-    return [subA, subB]
+def map_subpoly_to_3d(sub_poly, uv_poly, pts3d):
+    """把 ACD 分解出的 2D 子多边形顶点映射到 3D（用最近 UV 顶点匹配）。"""
+    uv = np.asarray(uv_poly, dtype=np.float64)
+    out = []
+    for p in sub_poly:
+        j = int(np.argmin(np.linalg.norm(uv - np.asarray(p, dtype=np.float64), axis=1)))
+        out.append(pts3d[j])
+    return np.array(out)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -489,8 +249,8 @@ def main():
         raw_bnds_3d = load_boundaries_3d(str(rfile))
         print(f"Raw boundary polylines (pre-smoothing): {len(raw_bnds_3d)}")
 
-    # ── Step 4: Concave detection (vertex-level, on smoothed boundaries) ──
-    concave_results = {}   # pid → analysis dict
+    # ── Step 4: Multi-scale concavity analysis (concavity_analysis module) ──
+    concave_results = {}   # pid → analysis dict (from ca.analyze_boundary)
     all_split_lines = []   # [(pid, (p0, p1)), ...]
 
     colors = np.zeros((n_parts, 3))
@@ -500,7 +260,8 @@ def main():
     for pid in pids:
         poly = boundaries_uv[pid]
         if not poly or len(poly) < 3:
-            concave_results[pid] = {'cls': [], 'runs': [], 'deficit': 0, 'split_lines': []}
+            concave_results[pid] = {'runs': [], 'segments': [], 'deficit': 0,
+                                    'split_lines': [], 'sub_polygons': []}
             continue
 
         # Orient CCW (UV + 3D in sync) so the cross-product sign is meaningful
@@ -509,18 +270,19 @@ def main():
         if b3d_ccw is not None:
             boundaries_3d[pid] = b3d_ccw
 
-        res = analyze_partition(uv_ccw, args.threshold)
-        res['poly'] = uv_ccw
+        res = ca.analyze_boundary(uv_ccw, tau=args.threshold)
         concave_results[pid] = res
 
-        n_runs = len(res['runs'])
+        n_seg = len(res['segments'])
         n_splits = len(res['split_lines'])
+        n_sub = len(res['sub_polygons'])
         print(f"  part {pid}: deficit={res['deficit']:.4f}, "
-              f"{n_runs} concave segment(s), {n_splits} split line(s)")
+              f"{n_seg} concave segment(s), {n_splits} split line(s), "
+              f"{n_sub} ACD sub-polygon(s)")
         for st, p0, p1 in res['split_lines']:
             all_split_lines.append((pid, (p0, p1)))
 
-    n_concave = sum(1 for r in concave_results.values() if r['runs'])
+    n_concave = sum(1 for r in concave_results.values() if r['segments'])
     deficits = [r['deficit'] for r in concave_results.values()]
     print(f"\nConcavity summary: {n_concave}/{len(concave_results)} partitions with concave segments, "
           f"{len(all_split_lines)} split line(s) generated")
@@ -579,7 +341,7 @@ def main():
         bnd3d = boundaries_3d[pid]
         pts = np.array(bnd3d)
         cr = concave_results.get(pid)
-        runs = cr['runs'] if cr else []
+        segments = cr['segments'] if cr else []
         nv = len(pts)
 
         # smoothed boundary loop in partition color (thin)
@@ -590,12 +352,9 @@ def main():
                     render_lines_as_tubes=True, name=bname)
         view_actors[2].append(bname)
 
-        # mark concave segments (vertex clusters judged concave) in red
-        for ri, (s, e) in enumerate(runs):
-            if s <= e:
-                seg_idx = list(range(s, e + 1))
-            else:
-                seg_idx = list(range(s, nv)) + list(range(0, e + 1))
+        # mark macro concave segments (multi-scale filtered) in red
+        for ri, seg in enumerate(segments):
+            seg_idx = seg['indices']
             seg_pts = pts[seg_idx]
             ns = len(seg_pts)
             if ns < 2:
@@ -642,24 +401,21 @@ def main():
         pl.add_mesh(s, color='black', line_width=4, name=sname)
         view_actors[3].append(sname)
 
-    # --- View 4: Warm-start (apply concave splits → re-partition) ---
-    split_map = {}  # pid → list of (p0, p1) split lines
-    for pid, sl in all_split_lines:
-        split_map.setdefault(pid, []).append(sl)
-
+    # --- View 4: Warm-start (ACD recursive decomposition → re-partition) ---
     warm_bnds = []
     for pid in pids:
         uv_poly = boundaries_uv.get(pid)
         b3d = boundaries_3d.get(pid)
         if b3d is None:
             continue
-        # split concave partitions along the first generated split line
-        if pid in split_map and uv_poly is not None:
-            subs = split_loop_by_line(uv_poly, b3d, *split_map[pid][0])
-            if subs:
-                warm_bnds.extend(subs)
-                continue
-        warm_bnds.append(np.array(b3d))
+        res = concave_results.get(pid)
+        subs = res.get('sub_polygons') if res else None
+        if subs and len(subs) > 1:
+            pts3d = np.array(b3d)
+            for sp in subs:
+                warm_bnds.append(map_subpoly_to_3d(sp, uv_poly, pts3d))
+        else:
+            warm_bnds.append(np.array(b3d))
 
     for cid, bnd in enumerate(warm_bnds):
         pts = np.array(bnd)
