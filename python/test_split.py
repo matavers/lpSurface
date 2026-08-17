@@ -259,7 +259,7 @@ def main():
 
     for pid in pids:
         poly = boundaries_uv[pid]
-        if not poly or len(poly) < 3:
+        if len(poly) < 3:
             concave_results[pid] = {'runs': [], 'segments': [], 'deficit': 0,
                                     'split_lines': [], 'sub_polygons': []}
             continue
@@ -380,7 +380,7 @@ def main():
         if pid not in boundaries_3d:
             continue
         bnd3d = boundaries_3d[pid]
-        if not bnd3d or len(bnd3d) < 3:
+        if len(bnd3d) < 3:
             continue
         pts = np.array(bnd3d)
         bname = f'v3_bnd_{pid}'
