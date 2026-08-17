@@ -24,6 +24,13 @@ public:
     std::tuple<IntVecSet, std::vector<RuledHistoryEntry>>
     partition(const Vec3Arr& vertices, const Vec2Arr& uvs);
 
+    /// 热启动分区：用已有顶点分区 initLabels 拟合各分区直母线（directrix）作为
+    /// 初始值，再运行 maxIter 步 EM 优化后输出分区。与冷启动 partition() 的区别是
+    /// 跳过 k-means++ 随机种子初始化。
+    std::tuple<IntVecSet, std::vector<RuledHistoryEntry>>
+    partitionWarmStart(const Vec3Arr& vertices, const Vec2Arr& uvs,
+                       const IntArr& initLabels, int maxIter);
+
     const std::vector<MatX>& controlPoints0() const { return m_cp0; }
     const std::vector<MatX>& controlPoints1() const { return m_cp1; }
     const std::vector<double>& knots() const { return m_knots; }

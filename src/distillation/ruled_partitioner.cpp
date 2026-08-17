@@ -319,4 +319,56 @@ HardEMPartitioner::partition(const Vec3Arr& vertices, const Vec2Arr& uvs) {
     return {partitions, m_history};
 }
 
+std::tuple<IntVecSet, std::vector<RuledHistoryEntry>>
+HardEMPartitioner::partitionWarmStart(const Vec3Arr& vertices, const Vec2Arr& uvs,
+                                      const IntArr& initLabels, int maxIter) {
+    int N = static_cast<int>(vertices.size());
+    if (m_verbose) {
+        std::cout << "Hard-EM warm-start: K=" << m_K << ", maxIter=" << maxIter
+                  << ", vertices=" << N << std::endl;
+    }
+
+    m_basisCache.clear();
+    m_cp0.resize(m_K, MatX::Zero(m_nCtrl, 3));
+    m_cp1.resize(m_K, MatX::Zero(m_nCtrl, 3));
+
+    // 用已有分区拟合直母线作为初始值（跳过 k-means++ 种子）
+    mStep(vertices, uvs, initLabels);
+    m_labels.clear();
+    m_history.clear();
+
+    for (int it = 0; it < maxIter; ++it) {
+        auto [labels, change] = assignLabels(vertices, uvs);
+
+        int nEmpty = 0;
+        IntArr sizes(m_K, 0);
+        for (int j = 0; j < N; ++j) sizes[labels[j]]++;
+        for (int k = 0; k < m_K; ++k) if (sizes[k] == 0) nEmpty++;
+
+        double totalRMS = computeTotalRMS(vertices, uvs, labels);
+        m_history.push_back({it + 1, change, nEmpty, sizes, totalRMS, labels});
+
+        if (m_verbose) {
+            std::cout << "  warm iter " << (it + 1) << ": change=" << change
+                      << " empty=" << nEmpty << " RMS=" << totalRMS << std::endl;
+        }
+
+        if (it > 1 && change < m_tol) {
+            if (m_verbose) std::cout << "  => warm converged: change " << change
+                                     << " < " << m_tol << std::endl;
+            break;
+        }
+
+        mStep(vertices, uvs, labels);
+    }
+
+    IntVecSet partitions(m_K);
+    for (int k = 0; k < m_K; ++k) partitions[k] = IntSet{};
+    if (!m_labels.empty()) {
+        for (int j = 0; j < N; ++j)
+            partitions[m_labels[j]].insert(j);
+    }
+    return {partitions, m_history};
+}
+
 } // namespace distillation

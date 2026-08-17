@@ -103,6 +103,11 @@ def load_obj(path):
     return np.array(verts), np.array(faces)
 
 
+def load_mesh_uv(path):
+    """加载顶点 UV 坐标（每行 u v），与 mesh.obj 顶点一一对应。"""
+    return np.loadtxt(path, dtype=np.float64)
+
+
 # ═══════════════════════════════════════════════════════════════
 # UV/3D 同步定向 + 热启动切分（3D 相关，保留在 test_split 侧；
 # 纯 2D 凹性分析算法在 concavity_analysis 模块）
@@ -137,6 +142,106 @@ def map_subpoly_to_3d(sub_poly, uv_poly, pts3d):
         j = int(np.argmin(np.linalg.norm(uv - np.asarray(p, dtype=np.float64), axis=1)))
         out.append(pts3d[j])
     return np.array(out)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 热启动分区：分割线 → 网格折线（复现 C++ applySplit）→ 边界提取 → 拉普拉斯平滑
+# ═══════════════════════════════════════════════════════════════
+
+def apply_split(face_labels, faces, uvs, p0, p1, src_pid, n_parts, min_faces=3):
+    """复现 C++ applySplit（concave_split.cpp）：用分割线 p0-p1 把 src_pid 的 face
+    按质心分到两侧，右侧(cross>0)标为新分区，左侧保持 src_pid。
+    返回右侧 face 数（-1 表示两侧太小，分割失败）。"""
+    p0 = np.asarray(p0, dtype=np.float64)
+    p1 = np.asarray(p1, dtype=np.float64)
+    new_pid = n_parts
+    count_left = 0
+    count_right = 0
+    side = {}
+    for fi in range(len(faces)):
+        if face_labels[fi] != src_pid:
+            continue
+        f = faces[fi]
+        c = (uvs[f[0]] + uvs[f[1]] + uvs[f[2]]) / 3.0
+        cross = (p1[0] - p0[0]) * (c[1] - p0[1]) - (p1[1] - p0[1]) * (c[0] - p0[0])
+        if cross > 1e-12:
+            side[fi] = 1
+            count_right += 1
+        else:
+            side[fi] = -1
+            count_left += 1
+    if count_left < min_faces or count_right < min_faces:
+        return -1
+    for fi, s in side.items():
+        if s > 0:
+            face_labels[fi] = new_pid
+    return count_right
+
+
+def extract_loops_from_faces(face_labels, faces, verts3d, uvs, n_parts):
+    """从 face labels 提取每个分区的闭合边界 loop（沿网格边的折线）。
+    返回 (loops_3d, loops_uv)：pid → numpy (n,2/3) 顶点。"""
+    loops_3d = {}
+    loops_uv = {}
+    nf = len(faces)
+    for pid in range(n_parts):
+        part_faces = [fi for fi in range(nf) if face_labels[fi] == pid]
+        if not part_faces:
+            continue
+        edge_count = {}
+        for fi in part_faces:
+            f = faces[fi]
+            for k in range(3):
+                a, b = f[k], f[(k + 1) % 3]
+                if a > b:
+                    a, b = b, a
+                edge_count[(a, b)] = edge_count.get((a, b), 0) + 1
+        bedges = [e for e, c in edge_count.items() if c == 1]
+        if len(bedges) < 3:
+            continue
+        adj = {}
+        for a, b in bedges:
+            adj.setdefault(a, []).append(b)
+            adj.setdefault(b, []).append(a)
+        loop = []
+        cur = next(iter(adj))
+        prev = -1
+        for _ in range(len(bedges) + 2):
+            loop.append(cur)
+            nxt = -1
+            for nb in adj[cur]:
+                if nb != prev:
+                    nxt = nb
+                    break
+            if nxt < 0 or nxt == loop[0]:
+                break
+            prev, cur = cur, nxt
+        if len(loop) < 3:
+            continue
+        loops_3d[pid] = np.array([verts3d[v] for v in loop])
+        loops_uv[pid] = np.array([uvs[v] for v in loop])
+    return loops_3d, loops_uv
+
+
+def laplacian_smooth_polygon(points, n_iters=16, lam=0.5):
+    """闭合折线 umbrella 拉普拉斯平滑（位移截断，模拟 C++ 主流程）。"""
+    pts = np.asarray(points, dtype=np.float64)
+    n = len(pts)
+    if n < 4:
+        return pts
+    edge_lens = np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1)
+    max_step = edge_lens.mean() * 0.3
+    for _ in range(n_iters):
+        new_pts = pts.copy()
+        for i in range(n):
+            avg = (pts[(i - 1) % n] + pts[(i + 1) % n]) / 2.0
+            disp = lam * (avg - pts[i])
+            d = np.linalg.norm(disp)
+            if d > max_step:
+                disp = disp * (max_step / d)
+            new_pts[i] = pts[i] + disp
+        pts = new_pts
+    return pts
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -199,6 +304,13 @@ def main():
 
     face_labels = load_face_labels(str(lfile)) if lfile.exists() else None
     n_parts = int(face_labels.max()) + 1 if face_labels is not None else 0
+
+    # 顶点 UV（复现 applySplit 用，与 mesh.obj 顶点一一对应）
+    mesh_uv = None
+    uvfile = data_dir / "mesh_uv.txt"
+    if uvfile.exists():
+        mesh_uv = load_mesh_uv(str(uvfile))
+        print(f"Vertex UV: {len(mesh_uv)} verts")
 
     # Load per-partition loop files (1:1 with partitions), may have gaps
     boundaries_uv = {}  # pid → list of [(x,y), ...]
@@ -299,6 +411,38 @@ def main():
         print(f"deficit range=[{min(deficits):.4f}, {max(deficits):.4f}], "
               f"mean={np.mean(deficits):.4f}")
 
+    # ── Step 4.5: Warm-start partition (split line → mesh polyline → Laplacian) ──
+    warm_labels = None          # applySplit 后的 face labels
+    warm_loops_3d = {}          # pid → 网格折线 3D（分割线对应到网格折线）
+    warm_loops_smoothed = {}    # pid → 拉普拉斯平滑后的 3D 折线
+    warm_split_new = 0
+
+    if (mesh_uv is not None and face_labels is not None
+            and faces is not None and all_split_lines):
+        warm_labels = face_labels.copy()
+        n_parts_warm = n_parts
+        split_map = {}
+        for pid, sl in all_split_lines:
+            split_map.setdefault(pid, []).append(sl)
+        for pid, sls in split_map.items():
+            for (p0, p1) in sls:
+                n_assigned = apply_split(warm_labels, faces, mesh_uv,
+                                         p0, p1, pid, n_parts_warm, 3)
+                if n_assigned > 0:
+                    warm_split_new += 1
+                    n_parts_warm += 1
+                    break  # 每个分区只切一次（取第一条分割线）
+        warm_loops_3d, warm_loops_uv = extract_loops_from_faces(
+            warm_labels, faces, verts3d, mesh_uv, n_parts_warm)
+        for pid, l3d in warm_loops_3d.items():
+            warm_loops_smoothed[pid] = laplacian_smooth_polygon(l3d, args.smooth_iters, 0.5)
+        print(f"  [WarmStart] applySplit: {warm_split_new} splits -> {n_parts_warm} partitions, "
+              f"{len(warm_loops_3d)} mesh polylines extracted, "
+              f"{len(warm_loops_smoothed)} smoothed")
+    else:
+        print("  [WarmStart] skipped (need mesh_uv.txt + face_labels.txt + mesh.obj; "
+              "rebuild C++ with mesh_uv export)")
+
     # ── Step 5: Interactive Visualization ──
     pv.set_plot_theme("document")
     pl = pv.Plotter()
@@ -375,89 +519,112 @@ def main():
                         render_lines_as_tubes=True, name=rname)
             view_actors[2].append(rname)
 
-    # --- View 3: Surface bg + boundary + cutting lines (3D) ---
-    for pid in pids:
-        if pid not in boundaries_3d:
-            continue
-        bnd3d = boundaries_3d[pid]
-        if len(bnd3d) < 3:
-            continue
-        pts = np.array(bnd3d)
-        bname = f'v3_bnd_{pid}'
-        bp = pv.PolyData(pts)
-        nv = len(pts)
-        bp.lines = np.array([nv] + list(range(nv)), dtype=np.int64)
-        pl.add_mesh(bp, color=TAB10[pid % 10], line_width=1.5,
-                    render_lines_as_tubes=True, name=bname)
-        view_actors[3].append(bname)
-    # 3D split lines: map UV split endpoints → nearest 3D boundary vertex
-    for idx, (pid, (p0, p1)) in enumerate(all_split_lines):
-        if pid not in boundaries_uv or pid not in boundaries_3d:
-            continue
-        poly_uv = boundaries_uv[pid]
-        pts3d = np.array(boundaries_3d[pid])
-        if len(poly_uv) != len(pts3d):
-            continue
-        # find nearest UV vertex to each split endpoint
-        uv_arr = np.array(poly_uv)
-        d0 = np.linalg.norm(uv_arr - np.array(p0), axis=1)
-        d1 = np.linalg.norm(uv_arr - np.array(p1), axis=1)
-        i0, i1 = np.argmin(d0), np.argmin(d1)
-        seg = np.array([pts3d[i0], pts3d[i1]])
-        s = pv.PolyData(seg)
-        s.lines = np.array([2, 0, 1], dtype=int)
-        sname = f'v3_cut_{idx}'
-        pl.add_mesh(s, color='black', line_width=4, name=sname)
-        view_actors[3].append(sname)
+    # --- View 3: split line → mesh polyline (分割线对应到网格折线) ---
+    if warm_loops_3d:
+        for pid, l3d in warm_loops_3d.items():
+            pts = np.array(l3d)
+            nv = len(pts)
+            bname = f'v3_meshpoly_{pid}'
+            bp = pv.PolyData(pts)
+            bp.lines = np.array([nv + 1] + list(range(nv)) + [0], dtype=np.int64)
+            pl.add_mesh(bp, color=TAB10[pid % 10], line_width=2,
+                        render_lines_as_tubes=True, name=bname)
+            view_actors[3].append(bname)
+        # 分割线（黑色，端点映射到网格顶点）
+        if mesh_uv is not None and verts3d is not None:
+            for idx, (pid, (p0, p1)) in enumerate(all_split_lines):
+                d0 = np.linalg.norm(mesh_uv - np.array(p0), axis=1)
+                d1 = np.linalg.norm(mesh_uv - np.array(p1), axis=1)
+                i0, i1 = np.argmin(d0), np.argmin(d1)
+                seg = np.array([verts3d[i0], verts3d[i1]])
+                s = pv.PolyData(seg)
+                s.lines = np.array([2, 0, 1], dtype=int)
+                sname = f'v3_cut_{idx}'
+                pl.add_mesh(s, color='black', line_width=4, name=sname)
+                view_actors[3].append(sname)
+    else:
+        for pid in pids:
+            if pid not in boundaries_3d:
+                continue
+            bnd3d = boundaries_3d[pid]
+            if len(bnd3d) < 3:
+                continue
+            pts = np.array(bnd3d)
+            bname = f'v3_bnd_{pid}'
+            bp = pv.PolyData(pts)
+            nv = len(pts)
+            bp.lines = np.array([nv] + list(range(nv)), dtype=np.int64)
+            pl.add_mesh(bp, color=TAB10[pid % 10], line_width=1.5,
+                        render_lines_as_tubes=True, name=bname)
+            view_actors[3].append(bname)
+        for idx, (pid, (p0, p1)) in enumerate(all_split_lines):
+            if pid not in boundaries_uv or pid not in boundaries_3d:
+                continue
+            uv_arr = np.array(boundaries_uv[pid])
+            pts3d = np.array(boundaries_3d[pid])
+            if len(uv_arr) != len(pts3d):
+                continue
+            d0 = np.linalg.norm(uv_arr - np.array(p0), axis=1)
+            d1 = np.linalg.norm(uv_arr - np.array(p1), axis=1)
+            i0, i1 = np.argmin(d0), np.argmin(d1)
+            seg = np.array([pts3d[i0], pts3d[i1]])
+            s = pv.PolyData(seg)
+            s.lines = np.array([2, 0, 1], dtype=int)
+            sname = f'v3_cut_{idx}'
+            pl.add_mesh(s, color='black', line_width=4, name=sname)
+            view_actors[3].append(sname)
 
-    # --- View 4: Warm-start (ACD recursive decomposition → re-partition) ---
-    warm_bnds = []
-    for pid in pids:
-        uv_poly = boundaries_uv.get(pid)
-        b3d = boundaries_3d.get(pid)
-        if b3d is None:
-            continue
-        res = concave_results.get(pid)
-        subs = res.get('sub_polygons') if res else None
-        if subs and len(subs) > 1:
-            pts3d = np.array(b3d)
-            for sp in subs:
-                warm_bnds.append(map_subpoly_to_3d(sp, uv_poly, pts3d))
-        else:
-            warm_bnds.append(np.array(b3d))
-
-    for cid, bnd in enumerate(warm_bnds):
-        pts = np.array(bnd)
-        nv = len(pts)
-        wn = f'v4_ws_{cid}'
-        bp = pv.PolyData(pts)
-        # 闭合折线：闭合边即分割线（热启动新边界）
-        bp.lines = np.array([nv + 1] + list(range(nv)) + [0], dtype=np.int64)
-        pl.add_mesh(bp, color=TAB10[cid % 10], line_width=2,
-                    render_lines_as_tubes=True, name=wn)
-        view_actors[4].append(wn)
-
-    # 分割线（黑色粗线，突出热启动切分位置）
-    for idx, (pid, (p0, p1)) in enumerate(all_split_lines):
-        if pid not in boundaries_uv or pid not in boundaries_3d:
-            continue
-        uv_arr = np.array(boundaries_uv[pid])
-        pts3d = np.array(boundaries_3d[pid])
-        if len(uv_arr) != len(pts3d):
-            continue
-        d0 = np.linalg.norm(uv_arr - np.array(p0), axis=1)
-        d1 = np.linalg.norm(uv_arr - np.array(p1), axis=1)
-        i0, i1 = np.argmin(d0), np.argmin(d1)
-        seg = np.array([pts3d[i0], pts3d[i1]])
-        s = pv.PolyData(seg)
-        s.lines = np.array([2, 0, 1], dtype=int)
-        sname = f'v4_cut_{idx}'
-        pl.add_mesh(s, color='black', line_width=4, name=sname)
-        view_actors[4].append(sname)
-    if not warm_bnds:
-        ta = pl.add_text("No warm-start data", position='upper_right',
-                         font_size=14, color='gray', name='v4_nodata')
-        view_actors[4].append('v4_nodata')
+    # --- View 4: warm-start partition + Laplacian smoothing (热启动再分区→平滑) ---
+    if warm_loops_smoothed:
+        for pid, l3d in warm_loops_smoothed.items():
+            pts = np.array(l3d)
+            nv = len(pts)
+            wn = f'v4_ws_{pid}'
+            bp = pv.PolyData(pts)
+            bp.lines = np.array([nv + 1] + list(range(nv)) + [0], dtype=np.int64)
+            pl.add_mesh(bp, color=TAB10[pid % 10], line_width=2,
+                        render_lines_as_tubes=True, name=wn)
+            view_actors[4].append(wn)
+        # 分割线（黑色，端点映射到网格顶点）
+        if mesh_uv is not None and verts3d is not None:
+            for idx, (pid, (p0, p1)) in enumerate(all_split_lines):
+                d0 = np.linalg.norm(mesh_uv - np.array(p0), axis=1)
+                d1 = np.linalg.norm(mesh_uv - np.array(p1), axis=1)
+                i0, i1 = np.argmin(d0), np.argmin(d1)
+                seg = np.array([verts3d[i0], verts3d[i1]])
+                s = pv.PolyData(seg)
+                s.lines = np.array([2, 0, 1], dtype=int)
+                sname = f'v4_cut_{idx}'
+                pl.add_mesh(s, color='black', line_width=4, name=sname)
+                view_actors[4].append(sname)
+    else:
+        warm_bnds = []
+        for pid in pids:
+            uv_poly = boundaries_uv.get(pid)
+            b3d = boundaries_3d.get(pid)
+            if b3d is None:
+                continue
+            res = concave_results.get(pid)
+            subs = res.get('sub_polygons') if res else None
+            if subs and len(subs) > 1:
+                pts3d = np.array(b3d)
+                for sp in subs:
+                    warm_bnds.append(map_subpoly_to_3d(sp, uv_poly, pts3d))
+            else:
+                warm_bnds.append(np.array(b3d))
+        for cid, bnd in enumerate(warm_bnds):
+            pts = np.array(bnd)
+            nv = len(pts)
+            wn = f'v4_ws_{cid}'
+            bp = pv.PolyData(pts)
+            bp.lines = np.array([nv + 1] + list(range(nv)) + [0], dtype=np.int64)
+            pl.add_mesh(bp, color=TAB10[cid % 10], line_width=2,
+                        render_lines_as_tubes=True, name=wn)
+            view_actors[4].append(wn)
+        if not warm_bnds:
+            ta = pl.add_text("No warm-start data", position='upper_right',
+                             font_size=14, color='gray', name='v4_nodata')
+            view_actors[4].append('v4_nodata')
 
     # ── Slider ──
     def set_view_visibility(v):
@@ -475,7 +642,7 @@ def main():
         set_view_visibility, rng=[0, 4], value=1, title="View",
         pointa=(0.02, 0.93), pointb=(0.28, 0.93),
         style='modern')
-    pl.add_text("0:原曲面  1:初始分区  2:凹线段(灰=原始/蓝=平滑/红=凹)  3:切割线  4:热启动再分区",
+    pl.add_text("0:原曲面  1:初始分区  2:凹线段(灰=原始/蓝=平滑/红=凹)  3:分割线→网格折线  4:热启动+平滑",
                 position='lower_edge', font_size=10, color='black', name='v_legend')
     set_view_visibility(1)
     pl.show()

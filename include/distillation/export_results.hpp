@@ -12,6 +12,8 @@ namespace distillation {
 
 bool exportOBJ(const std::string& path, const Vec3Arr& vertices, const FaceArr& faces);
 
+bool exportMeshUV(const std::string& path, const Vec2Arr& uvs);
+
 bool exportPartitionLabels(const std::string& path, int numVertices, const IntVecSet& partitions);
 
 bool exportPartitionLabels(const std::string& path, int numVertices, const IntArr& labels);

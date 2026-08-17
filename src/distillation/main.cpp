@@ -87,6 +87,30 @@ static NurbsSurfaceWrapper createMountainTerrain() {
     return NurbsSurfaceWrapper(cp,nU,nV,makeClampedKnots(nU,degU,true),makeClampedKnots(nV,degV,true),degU,degV);
 }
 
+// ── face labels -> vertex labels (for warm-start EM) ──
+static IntArr faceLabelsToVertexLabels(const IntArr& faceLabels, const FaceArr& faces, int numVertices){
+    IntArr vl(numVertices, -1);
+    for(int fi=0;fi<(int)faceLabels.size();++fi){
+        int l=faceLabels[fi];
+        if(l>=0){vl[faces[fi].v0]=l;vl[faces[fi].v1]=l;vl[faces[fi].v2]=l;}
+    }
+    return vl;
+}
+
+// ── Warm-start partition: EM refine starting from current faceLabels ──
+static void warmStartPartition(const NurbsSurfaceWrapper& nurbs, const Vec3Arr& vertices,
+                               const Vec2Arr& uvs, const FaceArr& faces,
+                               IntArr& faceLabels, int& nParts, int maxIter){
+    IntArr vLabels=faceLabelsToVertexLabels(faceLabels, faces, (int)vertices.size());
+    HardEMPartitioner ws(nurbs, nParts, 6, 3, 0.001, 20, 0.0, true);
+    auto wsResult=ws.partitionWarmStart(vertices, uvs, vLabels, maxIter);
+    const IntVecSet& wsPartitions=std::get<0>(wsResult);
+    faceLabels=convertVertexLabelsToFaceLabels(wsPartitions, faces, (int)vertices.size());
+    mergeTinyRegions(faceLabels, faces);
+    nParts=0;for(int fl:faceLabels)if(fl>=0&&fl>=nParts)nParts=fl+1;
+    std::cout<<"  [WarmStart] EM refined -> "<<nParts<<" partitions\n";
+}
+
 // ── Partition data export ───────────────────────
 static void exportPartitionData(const std::string& dir,const IntArr& faceLabels,const FaceArr& faces,const Vec3Arr& verts3D,const Vec2Arr& uvs,int nParts){
     std::vector<IntArr> partFaces(nParts);
@@ -142,6 +166,7 @@ int main(int argc,char*argv[]){
     int K_parts=16, prevNFail=999, nParts=0;
     bool needEM=true;
     IntArr faceLabels;
+    int totalSplitNew=0;  // 本外循环内分割新增的分区数
 
     for(int retry=0;retry<maxRetries;++retry){
         std::string retryDir = exportDir + "/retry_" + std::to_string(retry);
@@ -160,6 +185,7 @@ int main(int argc,char*argv[]){
             mergeTinyRegions(faceLabels,faces);
             nParts=0;for(int fl:faceLabels)if(fl>=0&&fl>=nParts)nParts=fl+1;
             needEM=false;
+            totalSplitNew=0;
         }
 
         auto[uMin,uMax]=nurbs.paramDomainU();auto[vMin,vMax]=nurbs.paramDomainV();
@@ -210,6 +236,7 @@ int main(int argc,char*argv[]){
                 double cosA=clamp(v1.normalized().dot(v2.normalized()),-1.,1.);if(radToDeg(std::acos(cosA))>60.)corners3D.push_back(nurbs.evaluate(p1.x(),p1.y()));}}
 
         exportOBJ(retryDir+"/mesh.obj",updatedVerts3D,faces);
+        exportMeshUV(retryDir+"/mesh_uv.txt",updatedUVs);
         {IntArr vl(updatedVerts3D.size(),-1);for(int fi=0;fi<(int)faceLabels.size();++fi){int l=faceLabels[fi];if(l>=0){vl[faces[fi].v0]=l;vl[faces[fi].v1]=l;vl[faces[fi].v2]=l;}}exportPartitionLabels(retryDir+"/partition_labels.txt",(int)updatedVerts3D.size(),vl);}
         exportFaceLabels(retryDir+"/face_labels.txt",faceLabels);
         exportOBJ(retryDir+"/mesh_original.obj",vertices,faces);
@@ -265,8 +292,13 @@ int main(int argc,char*argv[]){
                 // force retry without reading tolerance
                 if(retry+1<maxRetries){
                     int nSplit=splitConcavePartitions(faceLabels,faces,updatedUVs,partitionLoops,nParts,0.3,3);
-                    if(nSplit>0){std::cout<<"  [Split] "<<nSplit<<" partitions split, re-smoothing\n";needEM=false;continue;}
-                    K_parts+=2;needEM=true;
+                    if(nSplit>0){
+                        totalSplitNew+=nSplit;
+                        std::cout<<"  [Split] "<<nSplit<<" partitions split -> warm-start EM\n";
+                        warmStartPartition(nurbs,vertices,uvs,faces,faceLabels,nParts,3);
+                        needEM=false;continue;
+                    }
+                    K_parts+=2+totalSplitNew;needEM=true;
                     std::cout<<"  [Tol] no split possible, K->"<<K_parts<<"\n";
                     continue;
                 }
@@ -282,7 +314,9 @@ int main(int argc,char*argv[]){
             // ── Always check concavity, independent of tolerance ──
             int nSplit = splitConcavePartitions(faceLabels,faces,updatedUVs,partitionLoops,nParts,0.3,3);
             if(nSplit>0){
-                std::cout<<", splitting concave -> re-smooth same K\n";
+                totalSplitNew+=nSplit;
+                std::cout<<", splitting concave -> warm-start EM\n";
+                warmStartPartition(nurbs,vertices,uvs,faces,faceLabels,nParts,3);
                 needEM=false; prevNFail=nFail; continue;
             }
 
@@ -290,7 +324,7 @@ int main(int argc,char*argv[]){
             if(retry+1>=maxRetries){std::cout<<", retries exhausted -- stop\n";break;}
 
             if(nFail>=prevNFail){
-                K_parts+=2;needEM=true;std::cout<<", K->"<<K_parts<<"\n";
+                K_parts+=2+totalSplitNew;needEM=true;std::cout<<", K->"<<K_parts<<"\n";
             }else{
                 sigma*=0.7;std::cout<<", sigma->"<<sigma<<"\n";
             }

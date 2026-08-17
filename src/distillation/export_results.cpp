@@ -27,6 +27,16 @@ bool exportOBJ(const std::string& path, const Vec3Arr& vertices, const FaceArr& 
     return true;
 }
 
+bool exportMeshUV(const std::string& path, const Vec2Arr& uvs) {
+    ensureDir(path);
+    std::ofstream out(path);
+    if (!out) { std::cerr << "Cannot write " << path << std::endl; return false; }
+    out.precision(12);
+    for (const auto& uv : uvs)
+        out << uv.x() << " " << uv.y() << "\n";
+    return true;
+}
+
 bool exportPartitionLabels(const std::string& path, int numVertices, const IntVecSet& partitions) {
     std::ofstream out(path);
     if (!out) { std::cerr << "Cannot write " << path << std::endl; return false; }
