@@ -276,9 +276,18 @@ def main():
         n_seg = len(res['segments'])
         n_splits = len(res['split_lines'])
         n_sub = len(res['sub_polygons'])
+        ph = res.get('ph')
+        if ph and ph['intervals'] is not None:
+            ph_str = f"PH cycles={len(ph['intervals'])}"
+            if ph['intervals']:
+                ph_str += f" (top persist={ph['intervals'][0][2]:.4f})"
+        elif ph and ph['note']:
+            ph_str = f"PH: {ph['note']}"
+        else:
+            ph_str = "PH: n/a"
         print(f"  part {pid}: deficit={res['deficit']:.4f}, "
               f"{n_seg} concave segment(s), {n_splits} split line(s), "
-              f"{n_sub} ACD sub-polygon(s)")
+              f"{n_sub} ACD sub-polygon(s), {ph_str}")
         for st, p0, p1 in res['split_lines']:
             all_split_lines.append((pid, (p0, p1)))
 

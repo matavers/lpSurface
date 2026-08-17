@@ -454,6 +454,51 @@ def concave_segment_persistence(poly, runs, scales=(0, 1, 2, 4, 8)):
     return results
 
 
+def ph_persistence(poly, max_points=200):
+    """PH 持久同调（§4.3）：对边界顶点做 Vietoris-Rips 复形，计算 H1 持久图。
+
+    对闭合凹多边形，H1 持久图中的环对应两类：
+      1) 主环：多边形整体围成的内部区域（death 尺度最大，接近轮廓直径）；
+      2) 凹区域环：每个凹区域（凸包桥 + 凹边界围成的洞）对应一个环，
+         其寿命 (death - birth) 量化该凹区域的显著性。
+
+    需要 ripser 库（pip install ripser）。未安装时返回 (None, note)。
+    返回 (intervals, note)：
+      intervals: [(birth, death, persistence), ...] 按 persistence 降序（已剔除主环）
+    """
+    try:
+        from ripser import ripser
+    except ImportError:
+        return None, "ripser not installed (pip install ripser)"
+
+    poly = np.asarray(poly, dtype=np.float64)
+    n = len(poly)
+    if n < 4:
+        return [], "too few vertices"
+
+    # 下采样避免 ripser 复杂度爆炸
+    pts = poly
+    if n > max_points:
+        step = int(np.ceil(n / max_points))
+        pts = poly[::step]
+        if len(pts) < 4:
+            pts = poly
+
+    dgms = ripser(pts, maxdim=1)['dgms']
+    h1 = dgms[1]
+    finite = h1[np.isfinite(h1[:, 1])]
+    if len(finite) == 0:
+        return [], "no finite H1 cycles"
+
+    # 主环 = death 尺度最大（多边形整体内部区域）
+    main_idx = int(np.argmax(finite[:, 1]))
+    rest = np.delete(finite, main_idx, axis=0)
+
+    intervals = [(float(b), float(d), float(d - b)) for b, d in rest]
+    intervals.sort(key=lambda x: x[2], reverse=True)
+    return intervals, None
+
+
 # ═══════════════════════════════════════════════════════════════
 # §4.1 近似凸分解 (ACD)
 # ═══════════════════════════════════════════════════════════════
@@ -549,7 +594,7 @@ def adaptive_threshold(poly, base_tau=0.3, target_components=None):
 # 主入口：完整多尺度凹性分析
 # ═══════════════════════════════════════════════════════════════
 
-def analyze_boundary(poly, tau=0.3, min_run_len=3, scales=(0, 1, 2, 4, 8)):
+def analyze_boundary(poly, tau=0.3, min_run_len=3, scales=(0, 1, 2, 4, 8), use_ph=True):
     """完整多尺度凹性分析（主入口，报告 §5.2 混合工作流）。
 
     参数:
@@ -557,12 +602,14 @@ def analyze_boundary(poly, tau=0.3, min_run_len=3, scales=(0, 1, 2, 4, 8)):
       tau: ACD 凹度阈值（归一化凹度 depth/width）
       min_run_len: 过滤孤立凹顶点（拉普拉斯平滑残留）的最小凹段长度
       scales: TAR 多尺度平滑的尺度集合（顶点数单位）
+      use_ph: 是否附加 PH 持久同调（§4.3，需 ripser），作为交叉验证
 
     返回 dict:
       poly, cls, tar, runs, pockets, deficit,
       segments: 每个显著凹段的完整量化（按持久性降序）,
       split_lines: ACD 第一层生成的分割线 [(type, p0, p1), ...],
       sub_polygons: ACD 递归分解结果（2D 顶点列表）,
+      ph: {'intervals': [(birth,death,persistence),...], 'note': str}（或 None）,
       tau: 实际使用的凹度阈值
     """
     poly_ccw = ensure_ccw(np.asarray(poly, dtype=np.float64))
@@ -621,6 +668,12 @@ def analyze_boundary(poly, tau=0.3, min_run_len=3, scales=(0, 1, 2, 4, 8)):
             'depths': pr['depths'],
         })
 
+    # §4.3 PH 持久同调（可选，交叉验证）
+    ph = None
+    if use_ph:
+        intervals, note = ph_persistence(poly_ccw)
+        ph = {'intervals': intervals, 'note': note}
+
     # §4.1 ACD 递归分解 + 第一层分割线
     sub_polygons = acd_decompose(poly_ccw, tau) if runs else [poly_ccw]
     split_lines = []
@@ -639,5 +692,6 @@ def analyze_boundary(poly, tau=0.3, min_run_len=3, scales=(0, 1, 2, 4, 8)):
         'segments': segments,
         'split_lines': split_lines,
         'sub_polygons': sub_polygons,
+        'ph': ph,
         'tau': tau,
     }
