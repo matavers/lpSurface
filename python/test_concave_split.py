@@ -501,6 +501,20 @@ def run_test():
     print("7. Visualizing...")
     pv.set_plot_theme("document")
     pl = pv.Plotter()
+
+    def add_closed_polyline(points, **kwargs):
+        """用 PolyData + lines 画闭合折线（避免 add_lines 偶数点限制）。"""
+        pts = np.asarray(points, dtype=np.float64)
+        n = len(pts)
+        if n > 1 and np.linalg.norm(pts[0] - pts[-1]) < 1e-6:
+            pts = pts[:-1]
+            n = len(pts)
+        if n < 2:
+            return None
+        bp = pv.PolyData(pts)
+        bp.lines = np.array([n + 1] + list(range(n)) + [0], dtype=np.int64)
+        return pl.add_mesh(bp, render_lines_as_tubes=True, **kwargs)
+
     pl.add_text("Concave Split Test  |  1=Mesh 2=Boundaries 3=Concave 4=Splits 5=After  q=Quit",
                 position="upper_left", font_size=10)
 
@@ -520,8 +534,8 @@ def run_test():
         # Close the loop
         if np.linalg.norm(poly_3d[0] - poly_3d[-1]) > 1e-6:
             poly_3d = np.vstack([poly_3d, poly_3d[0:1]])
-        pl.add_lines(poly_3d, color='black', width=2, name=f'boundary_{pid}',
-                     label='Boundaries (before)')
+        add_closed_polyline(poly_3d, color='black', line_width=2,
+                            name=f'boundary_{pid}', label='Boundaries (before)')
 
     # --- Concave partitions highlighted ---
     concave_actors = []
@@ -535,8 +549,8 @@ def run_test():
                            for p in poly])
         if np.linalg.norm(poly_3d[0] - poly_3d[-1]) > 1e-6:
             poly_3d = np.vstack([poly_3d, poly_3d[0:1]])
-        a = pl.add_lines(poly_3d, color='red', width=4, name=f'concave_{pid}',
-                         label='Macro-Concave')
+        a = add_closed_polyline(poly_3d, color='red', line_width=4,
+                                name=f'concave_{pid}', label='Macro-Concave')
         concave_actors.append(a)
 
     # --- Split lines ---
@@ -559,8 +573,8 @@ def run_test():
         if np.linalg.norm(poly_3d[0] - poly_3d[-1]) > 1e-6:
             poly_3d = np.vstack([poly_3d, poly_3d[0:1]])
         color = colors[pid % len(colors)]
-        a = pl.add_lines(poly_3d, color=color, width=3, name=f'after_{pid}',
-                         label='After Split')
+        a = add_closed_polyline(poly_3d, color=color, line_width=3,
+                                name=f'after_{pid}', label='After Split')
         after_actors.append(a)
 
     # Initially hide after-split boundaries
