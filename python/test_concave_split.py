@@ -493,6 +493,11 @@ def run_test():
     # ── Extract boundaries after split ──
     print("6. Extracting boundaries after split...")
     boundaries_after = extract_partition_boundary(face_labels, faces, n_parts)
+    # 转成 UV 坐标（与 boundaries_before 平滑后一致，可视化里按 [x,y] 索引）
+    boundaries_after = [
+        None if b is None else np.array([uvs[v] for v in b])
+        for b in boundaries_after
+    ]
 
     # ── Visualization ──
     if not HAS_PV:
