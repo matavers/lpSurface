@@ -23,6 +23,7 @@ PartitionResult partitionByDevelopable(
     const Vec3Arr& verts, const FaceArr& faces,
     const Vec3Arr& faceCentroids,
     const std::vector<Vec3>& asymPerVertex,
-    int K, int maxIter = 30, double lambdaDev = 1.0, double lambdaCenter = 0.3);
+    int K, int maxIter = 30, double lambdaDev = 1.0,
+    double lambdaCenter = 0.3, double lambdaSmooth = 0.05);
 
 } // namespace rulefit

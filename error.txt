@@ -1,0 +1,29 @@
+PS D:\Projects\lpSurface\OCCT-R1> python python\rulefit_ui.py
+Traceback (most recent call last):
+  File "D:\Projects\lpSurface\OCCT-R1\python\rulefit_ui.py", line 22, in <module>
+    from pyvistaqt import QtInteractor
+  File "D:\anaconda\Lib\site-packages\pyvistaqt\__init__.py", line 10, in <module>
+    from .plotting import BackgroundPlotter
+  File "D:\anaconda\Lib\site-packages\pyvistaqt\plotting.py", line 70, in <module>
+    from pyvista import global_theme
+  File "D:\anaconda\Lib\site-packages\pyvista\__init__.py", line 162, in __getattr__
+    import pyvista.plotting  # noqa: F401, PLC0415
+    ^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\anaconda\Lib\site-packages\pyvista\plotting\__init__.py", line 15, in <module>
+    from ._typing import CameraPositionOptions as CameraPositionOptions
+  File "D:\anaconda\Lib\site-packages\pyvista\plotting\_typing.py", line 22, in <module>
+    from .renderer import CameraPosition
+  File "D:\anaconda\Lib\site-packages\pyvista\plotting\renderer.py", line 44, in <module>
+    from .mapper import DataSetMapper
+  File "D:\anaconda\Lib\site-packages\pyvista\plotting\mapper.py", line 1484, in <module>
+    class OpenGLGPUVolumeRayCastMapper(_BaseVolumeMapper, _vtk.vtkOpenGLGPUVolumeRayCastMapper):
+                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\anaconda\Lib\site-packages\pyvista\_vtk.py", line 721, in __getattr__
+    module = importlib.import_module(module_full_name)
+  File "D:\anaconda\Lib\importlib\__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\anaconda\Lib\site-packages\vtkmodules\__init__.py", line 59, in exec_module
+    super().exec_module(module)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^
+ImportError: Failed to load vtkRenderingVolumeOpenGL2: No module named vtkmodules.vtkImagingCore

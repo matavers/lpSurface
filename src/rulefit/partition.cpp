@@ -56,11 +56,31 @@ PartitionResult partitionByDevelopable(
     const Vec3Arr& verts, const FaceArr& faces,
     const Vec3Arr& faceCentroids,
     const std::vector<Vec3>& asymPerVertex,
-    int K, int maxIter, double lambdaDev, double lambdaCenter) {
+    int K, int maxIter, double lambdaDev, double lambdaCenter, double lambdaSmooth) {
 
     PartitionResult result;
     int nF = (int)faces.size();
     if (nF == 0) return result;
+
+    // 构建面邻接（一次，供 ICM 平滑项使用）
+    std::vector<IntArr> faceAdj(nF);
+    {
+        std::map<std::pair<int, int>, IntArr> edgeFaces;
+        for (int fi = 0; fi < nF; ++fi) {
+            const Face& f = faces[fi];
+            for (int c = 0; c < 3; ++c) {
+                int a = f[c], b = f[(c + 1) % 3];
+                if (a > b) std::swap(a, b);
+                edgeFaces[{a, b}].push_back(fi);
+            }
+        }
+        for (auto& kv : edgeFaces) {
+            const IntArr& fl = kv.second;
+            for (size_t i = 0; i < fl.size(); ++i)
+                for (size_t j = 0; j < fl.size(); ++j)
+                    if (i != j) faceAdj[fl[i]].push_back(fl[j]);
+        }
+    }
 
     IntArr& labels = result.faceLabels;
     kmeansInit(faceCentroids, K, labels);
@@ -100,19 +120,24 @@ PartitionResult partitionByDevelopable(
             result.patches[k] = fitDevelopable(partPts[k], partAsym[k], 12);
         }
 
-        // ── E-step：每面分给最近的可展直纹面 ──
+        // ── E-step：ICM（图割近似）——数据项 + 平滑项 ──
         double energy = 0.0;
-        for (int fi = 0; fi < nF; ++fi) {
-            double best = std::numeric_limits<double>::infinity();
-            int bestK = labels[fi];
-            for (int k = 0; k < K; ++k) {
-                if (result.patches[k].numPoints < 6) continue;
-                double d = distToPatch(faceCentroids[fi], result.patches[k], lambdaCenter);
-                d += lambdaDev * result.patches[k].twist;   // 可展软约束（twist 分摊）
-                if (d < best) { best = d; bestK = k; }
+        for (int icmIter = 0; icmIter < 5; ++icmIter) {
+            for (int fi = 0; fi < nF; ++fi) {
+                double bestE = std::numeric_limits<double>::infinity();
+                int bestK = labels[fi];
+                for (int k = 0; k < K; ++k) {
+                    if (result.patches[k].numPoints < 6) continue;
+                    double data = distToPatch(faceCentroids[fi], result.patches[k], lambdaCenter)
+                                + lambdaDev * result.patches[k].twist;
+                    double smooth = 0.0;
+                    for (int fj : faceAdj[fi]) if (labels[fj] != k) smooth += 1.0;
+                    double e = data + lambdaSmooth * smooth;
+                    if (e < bestE) { bestE = e; bestK = k; }
+                }
+                labels[fi] = bestK;
+                energy += bestE;
             }
-            labels[fi] = bestK;
-            energy += best;
         }
         result.energy = energy;
         result.iterations = iter + 1;

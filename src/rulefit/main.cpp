@@ -68,6 +68,7 @@ int main(int argc, char* argv[]) {
     int maxIter = 20;
     double lambdaDev = 1.0;
     double lambdaCenter = 0.3;
+    double lambdaSmooth = 0.05;
     int seed = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -78,6 +79,7 @@ int main(int argc, char* argv[]) {
         else if (a.rfind("--max-iter=", 0) == 0) maxIter = std::stoi(a.substr(11));
         else if (a.rfind("--lambda-dev=", 0) == 0) lambdaDev = std::stod(a.substr(13));
         else if (a.rfind("--lambda-center=", 0) == 0) lambdaCenter = std::stod(a.substr(16));
+        else if (a.rfind("--lambda-smooth=", 0) == 0) lambdaSmooth = std::stod(a.substr(16));
         else if (a.rfind("--seed=", 0) == 0) seed = std::stoi(a.substr(7));
     }
     ensureDir(outDir);
@@ -118,7 +120,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  Partitioning K=" << K << " maxIter=" << maxIter
               << " lambdaDev=" << lambdaDev << "...\n";
     rulefit::PartitionResult result = rulefit::partitionByDevelopable(
-        verts, faces, faceCentroids, asymPerVertex, K, maxIter, lambdaDev, lambdaCenter);
+        verts, faces, faceCentroids, asymPerVertex, K, maxIter, lambdaDev, lambdaCenter, lambdaSmooth);
     std::cout << "  Partitions: " << result.nParts << " (energy=" << result.energy
               << ", iters=" << result.iterations << ")\n";
     exportFaceLabels(outDir + "/face_labels.txt", result.faceLabels);
